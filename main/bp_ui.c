@@ -22,12 +22,12 @@ LV_FONT_DECLARE(bp_font_24);
 #define COL_BG       0x0B1220
 #define COL_SURFACE  0x16213A
 #define COL_SURFACE2 0x22314F
-#define COL_ACCENT   0xFFB547
-#define COL_ON_ACC   0x1A1205
+// 强调色取自 ai-passport.folotoy.cn:--passport-green 与其上的文字色 --passport-on-green。
+#define COL_ACCENT   0x20E47C
+#define COL_ON_ACC   0x092113
 #define COL_TEXT     0xEEF2F8
 #define COL_MUTED    0x8A97B0
 #define COL_DANGER   0xFF6B6B
-#define COL_OK       0x5DD39E
 
 #define LIST_ROWS 7
 #define LIST_ROW_H 32
@@ -41,7 +41,7 @@ static bp_page_t s_page = BP_PAGE_HOME;
 static int s_sel[BP_PAGE_COUNT];
 
 // 顶层
-static lv_obj_t *s_status, *s_toast, *s_toast_label;
+static lv_obj_t *s_st_wifi, *s_st_play, *s_st_batt, *s_toast, *s_toast_label;
 static portMUX_TYPE s_toast_mux = portMUX_INITIALIZER_UNLOCKED;
 static char s_toast_text[64];
 static bool s_toast_pending;
@@ -112,7 +112,7 @@ static lv_obj_t *page_title(lv_obj_t *p, const char *text) {
     return t;
 }
 
-// 胶囊菜单项:选中时琥珀底深色字。
+// 胶囊菜单项:选中时品牌绿底深色字。
 static void pill(lv_obj_t *parent, int y, const char *icon, const char *text,
                  lv_obj_t **item, lv_obj_t **icon_l, lv_obj_t **text_l) {
     *item = box(parent, 20, y, 200, 40, COL_SURFACE, 20);
@@ -141,8 +141,13 @@ static const char *state_text(const bp_player_info_t *pi, char *buf, size_t cap)
 
 // ---- 构建页面 -------------------------------------------------------------------
 static void build_top_layer(void) {
-    s_status = label(lv_layer_top(), &lv_font_montserrat_14, COL_MUTED, "");
-    lv_obj_align(s_status, LV_ALIGN_TOP_MID, 0, 8);
+    // 状态栏:左 Wi-Fi、中 播放状态、右 电量。左右各内缩 32px,避开 30px 圆角。
+    s_st_wifi = label(lv_layer_top(), &lv_font_montserrat_14, COL_MUTED, "");
+    lv_obj_align(s_st_wifi, LV_ALIGN_TOP_LEFT, 32, 8);
+    s_st_play = label(lv_layer_top(), &lv_font_montserrat_14, COL_ACCENT, "");
+    lv_obj_align(s_st_play, LV_ALIGN_TOP_MID, 0, 8);
+    s_st_batt = label(lv_layer_top(), &lv_font_montserrat_14, COL_MUTED, "");
+    lv_obj_align(s_st_batt, LV_ALIGN_TOP_RIGHT, -32, 8);
 
     s_toast = box(lv_layer_top(), 24, 262, 192, 36, COL_SURFACE2, 18);
     lv_obj_set_style_border_color(s_toast, lv_color_hex(COL_ACCENT), 0);
@@ -323,32 +328,50 @@ static void build_info_pages(void) {
 
     p = s_pages[BP_PAGE_ABOUT] = page();
     page_title(p, "关于与按键");
-    lv_obj_t *about = info_label(p, 74);
-    lv_label_set_text(about,
-        "云盘随身听 v" BP_APP_VERSION "\n"
-        "上/下：选择 · 调音量\n"
-        "OK：确认 · 暂停/继续\n"
-        "播放页双击 OK：停止\n"
-        "长按 OK：返回上一级\n"
-        "长按上/下：上一首/下一首\n"
-        "首页长按 OK：回到播放页\n"
-        "支持 MP3、WAV(16 位)");
+    // 两栏:左按键(品牌绿)右说明,每项一行;说明超宽时省略而不换行。
+    static const char *keys[][2] = {
+        {"上 / 下", "选择 · 音量"},
+        {"OK", "确认 · 暂停"},
+        {"双击 OK", "停止播放"},
+        {"长按 OK", "返回上一级"},
+        {"长按上/下", "上一首/下一首"},
+        {"首页长按OK", "回到播放页"},
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        int y = 72 + (int)i * 28;
+        lv_obj_t *k = label(p, &bp_font_16, COL_ACCENT, keys[i][0]);
+        lv_obj_set_pos(k, 22, y);
+        lv_obj_t *d = label(p, &bp_font_16, COL_TEXT, keys[i][1]);
+        lv_obj_set_width(d, 104);
+        lv_label_set_long_mode(d, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_pos(d, 116, y);
+    }
+    lv_obj_t *formats = label(p, &bp_font_16, COL_MUTED, "支持 MP3 · WAV(16 位)");
+    lv_obj_align(formats, LV_ALIGN_TOP_MID, 0, 248);
+    lv_obj_t *ver = label(p, &bp_font_16, COL_MUTED, "云盘随身听 v" BP_APP_VERSION);
+    lv_obj_align(ver, LV_ALIGN_TOP_MID, 0, 270);
 }
 
 // ---- 刷新 -------------------------------------------------------------------------
 static void refresh_status(void) {
-    char buf[48];
-    int soc = bsp_battery_soc();
-    const char *batt = soc < 0 ? "" : soc > 80 ? LV_SYMBOL_BATTERY_FULL : soc > 55 ? LV_SYMBOL_BATTERY_3
-                     : soc > 30 ? LV_SYMBOL_BATTERY_2 : soc > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
+    // Wi-Fi:已连接为灰色图标,未连接为红色图标。
+    set_text_if(s_st_wifi, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_color(s_st_wifi, lv_color_hex(g_bp.wifi_up ? COL_MUTED : COL_DANGER), 0);
+
     bp_player_info_t pi;
     bp_player_get_info(&pi);
-    const char *play = pi.state == BP_PLAY_PLAYING ? LV_SYMBOL_PLAY " " :
-                       pi.state == BP_PLAY_PAUSED ? LV_SYMBOL_PAUSE " " : "";
-    if (soc >= 0) snprintf(buf, sizeof(buf), "%s%s  %s %d%%", play, g_bp.wifi_up ? LV_SYMBOL_WIFI : "", batt, soc);
-    else snprintf(buf, sizeof(buf), "%s%s", play, g_bp.wifi_up ? LV_SYMBOL_WIFI : "");
-    set_text_if(s_status, buf);
-    lv_obj_set_style_text_color(s_status, lv_color_hex(g_bp.wifi_up ? COL_MUTED : COL_DANGER), 0);
+    set_text_if(s_st_play, pi.state == BP_PLAY_PLAYING ? LV_SYMBOL_PLAY :
+                           pi.state == BP_PLAY_PAUSED ? LV_SYMBOL_PAUSE : "");
+
+    char buf[24];
+    int soc = bsp_battery_soc();
+    const char *batt = soc > 80 ? LV_SYMBOL_BATTERY_FULL : soc > 55 ? LV_SYMBOL_BATTERY_3
+                     : soc > 30 ? LV_SYMBOL_BATTERY_2 : soc > 10 ? LV_SYMBOL_BATTERY_1
+                     : LV_SYMBOL_BATTERY_EMPTY;
+    if (soc >= 0) snprintf(buf, sizeof(buf), "%d%% %s", soc, batt);
+    else buf[0] = 0;
+    set_text_if(s_st_batt, buf);
+    lv_obj_set_style_text_color(s_st_batt, lv_color_hex(soc >= 0 && soc <= 10 ? COL_DANGER : COL_MUTED), 0);
 }
 
 static void refresh_toast(void) {
@@ -458,7 +481,7 @@ static void refresh_list(void) {
             const bp_file_t *f = &s_list.files[fi];
             text = f->name;
             if (f->is_dir) { icon = LV_SYMBOL_DIRECTORY; icon_col = COL_ACCENT; }
-            else if (bp_media_format(f->name) != BP_FMT_UNKNOWN) { icon = LV_SYMBOL_AUDIO; icon_col = COL_OK; }
+            else if (bp_media_format(f->name) != BP_FMT_UNKNOWN) { icon = LV_SYMBOL_AUDIO; icon_col = COL_ACCENT; }
             else text_col = COL_MUTED;   // 不支持的格式置灰
         }
         set_text_if(s_row_icons[i], icon);
