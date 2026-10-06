@@ -1,0 +1,104 @@
+<p align="right">
+  <strong>English</strong> · <a href="README.zh_CN.md">简体中文</a>
+</p>
+
+<h1 align="center">Baidu Netdisk Player</h1>
+
+<p align="center">
+  <strong>Your Baidu Netdisk music library, on a pocket badge.</strong><br>
+  Streaming MP3/WAV player firmware for the FoloToy AI Passport (ESP32-C3, no PSRAM).
+</p>
+
+---
+
+## Features
+
+- **Stream straight from Baidu Netdisk** — no local storage, no phone app. Browse folders or list
+  every MP3/WAV in your Netdisk by modification time.
+- **Scan to sign in** — the screen shows a QR code; confirm on your phone with your Baidu account.
+  The grant is stored on the device and refreshed automatically.
+- **Web Wi-Fi setup** — on first boot the device opens the `BaiduPlayer-XXXX` hotspot. Scan the QR
+  code on screen, pick your network in the captive web page, done.
+- **Player that keeps going** — auto-advance through the folder and onto the next page, resume
+  interrupted downloads with HTTP Range, volume remembered across reboots.
+- **Chinese file names** — the built-in font covers all 7,445 GB2312 characters.
+- **Three-button UI** designed for the 240×320 round-corner screen; the screen sleeps after 30 s
+  while music keeps playing.
+
+## Quick start
+
+1. **Get Baidu credentials.** Create an app on the
+   [Baidu Netdisk open platform](https://pan.baidu.com/union/console), then copy
+   `main/bp_baidu_keys.example.h` to `main/bp_baidu_keys.h` and fill in the AppKey and SecretKey.
+   That file is Git-ignored — never commit it.
+2. **Build and flash** with ESP-IDF 5.5.3:
+
+   ```bash
+   idf.py set-target esp32c3
+   idf.py build
+   idf.py -p <PORT> flash          # first install
+   idf.py -p <PORT> app-flash      # later updates keep Wi-Fi and authorization
+   ```
+
+   The full gate (`./tools/validate.sh`) runs repository checks, host tests and a verified merged image.
+3. **Connect Wi-Fi.** Join the `BaiduPlayer-XXXX` hotspot by scanning the screen; the setup page
+   opens (or visit `http://192.168.4.1`). Only 2.4 GHz networks are supported.
+4. **Authorize and play.** Choose *All audio* or *Browse* on the home screen, scan the QR code to
+   authorize, then press OK on any track.
+
+> Firmware built from your own credentials embeds your SecretKey. Do not publish your `build/` output.
+
+## Buttons
+
+| Screen | Up / Down | OK | Long OK | Long Up / Down |
+| --- | --- | --- | --- | --- |
+| Home | Select | Open | Return to player | Long Down: screen off |
+| List | Select | Open folder / play / page | Parent / home | Move 5 rows |
+| Player | Volume ±10 | Pause / resume | Back | Previous / next track |
+| Wi-Fi | — | Start setup hotspot | Back | — |
+
+## Supported audio
+
+| Format | Details |
+| --- | --- |
+| MP3 | MPEG-1/2 Layer III, CBR and VBR, any sample rate (Helix decoder) |
+| WAV | 16-bit PCM, mono or stereo, 8–48 kHz |
+
+Stereo is downmixed for the single speaker. FLAC, AAC/M4A and OGG are listed but greyed out.
+Seeking is not supported, and browsing a list while a track is streaming is refused because the
+device cannot hold two TLS connections at once.
+
+## How it works
+
+```text
+Baidu OAuth (device code) ─► xpan list / categorylist ─► filemetas dlink
+                                                             │
+control task ─► fetch task (HTTPS, 302, Range resume) ─► 20 KB stream buffer
+                                                             │
+                              decode task (Helix MP3 / WAV) ─► mono PCM ─► ES8311 / I2S
+```
+
+| Module | Role |
+| --- | --- |
+| [`main/bp_baidu.c`](main/bp_baidu.c) | Device-code authorization, locked single-use token refresh, folder and audio lists, download links |
+| [`main/bp_player.c`](main/bp_player.c) | Streaming pipeline, playlist, auto-advance, per-stage heap logging |
+| [`main/bp_ui.c`](main/bp_ui.c) | LVGL pages, created once at boot and switched by visibility |
+| [`main/bp_wifi.cc`](main/bp_wifi.cc) | Station reconnect and SoftAP captive-portal provisioning |
+| [`main/bp_media.c`](main/bp_media.c) | Pure logic with host tests: formats, ID3v2, WAV headers, paths |
+
+The ESP32-C3 has about 180 KB of heap for everything. Measured during playback: ~106 KB free
+before a track, ~52 KB after the CDN TLS connection, ~20 KB minimum while decoding, and full
+recovery after each track. See [docs/baidupan-player.md](docs/baidupan-player.md) for details,
+serial console commands and limits.
+
+## Credits
+
+- Built on [FoloToy AI Passport](https://github.com/FoloToy/ai-passport) (board support, build
+  and validation tooling). Its template documentation remains in [docs/README.md](docs/README.md).
+- Baidu Netdisk integration follows
+  [netdisk-recording-badge](https://github.com/openbrt/netdisk-recording-badge).
+- [esp-wifi-connect](https://github.com/78/esp-wifi-connect) for Wi-Fi and the captive portal,
+  [libhelix-mp3](https://components.espressif.com/components/chmorgan/esp-libhelix-mp3) for MP3,
+  and Source Han Sans SC (SIL OFL) for Chinese text.
+
+Released under the [MIT License](LICENSE).
