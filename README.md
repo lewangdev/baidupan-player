@@ -2,7 +2,7 @@
   <strong>English</strong> · <a href="README.zh_CN.md">简体中文</a>
 </p>
 
-<h1 align="center">Baidu Netdisk Player</h1>
+<h1 align="center">Baidupan Pocket Player</h1>
 
 <p align="center">
   <strong>Your Baidu Netdisk music library, on a pocket badge.</strong><br>
@@ -54,7 +54,7 @@
 | --- | --- | --- | --- | --- |
 | Home | Select | Open | Return to player | Long Down: screen off |
 | List | Select | Open folder / play / page | Parent / home | Move 5 rows |
-| Player | Volume ±10 | Pause / resume | Back | Previous / next track |
+| Player | Volume ±10 | Pause / resume; double-click: stop (OK again replays) | Back | Previous / next track |
 | Wi-Fi | — | Start setup hotspot | Back | — |
 
 ## Supported audio
@@ -89,7 +89,7 @@ control task ─► fetch task (HTTPS, 302, Range resume) ─► 20 KB stream bu
 
 The ESP32-C3 has about 180 KB of heap for everything. Measured during playback: ~106 KB free
 before a track, ~52 KB after the CDN TLS connection, ~20 KB minimum while decoding, and full
-recovery after each track. See [docs/baidupan-player.md](docs/baidupan-player.md) for details,
+recovery after each track. See [docs/baidupan-pocket-player.md](docs/baidupan-pocket-player.md) for details,
 serial console commands and limits.
 
 ## Credits

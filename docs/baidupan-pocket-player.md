@@ -1,8 +1,8 @@
 <p align="right">
-  <a href="baidupan-player.zh_CN.md">简体中文</a> · <strong>English</strong>
+  <a href="baidupan-pocket-player.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-# Baidu Netdisk Player
+# Baidupan Pocket Player
 
 Streams MP3 / WAV audio stored in Baidu Netdisk on the FoloToy AI Passport. The Netdisk
 integration (device-code QR authorization, token refresh, xpan APIs) follows
@@ -35,7 +35,7 @@ integration (device-code QR authorization, token refresh, xpan APIs) follows
 | --- | --- | --- | --- | --- |
 | Home | Select | Open | Return to player | Long Down: screen off |
 | List | Select | Open folder / play / change page | Parent / home | Move 5 rows |
-| Player | Volume ±10 | Pause / resume | Back | Previous / next track |
+| Player | Volume ±10 | Pause / resume; double-click: stop (OK again replays) | Back | Previous / next track |
 | Settings and info | Select | Open / run | Back | — |
 | Setup hotspot | — | — | Close hotspot and go back | — |
 

@@ -46,6 +46,7 @@ typedef enum {
     CMD_NEXT,
     CMD_PREV,
     CMD_STOP,
+    CMD_REPLAY,
     CMD_TRACK_END,
     CMD_TRACK_FAIL,
 } cmd_type_t;
@@ -597,6 +598,10 @@ static bool continue_next_page(void) {
 
 static void finish_idle(void) {
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    portENTER_CRITICAL(&s_mux);
+    s_info.pos_ms = 0;   // 停止后进度归零;曲名保留,单击 OK 可重播
+    s_info.buffer_pct = 0;
+    portEXIT_CRITICAL(&s_mux);
     set_state(BP_PLAY_IDLE, NULL);
 }
 
@@ -642,6 +647,10 @@ static void ctrl_task(void *arg) {
             case CMD_STOP:
                 stop_pipeline();
                 finish_idle();
+                break;
+            case CMD_REPLAY:
+                consecutive_failures = 0;
+                start_track(s_pl_index);
                 break;
             case CMD_TRACK_END:
             case CMD_TRACK_FAIL: {
@@ -694,6 +703,8 @@ void bp_player_toggle_pause(void) {
     bp_play_state_t st = s_info.state;
     if (st == BP_PLAY_PLAYING || st == BP_PLAY_BUFFERING || st == BP_PLAY_PAUSED)
         s_paused = !s_paused;
+    else if ((st == BP_PLAY_IDLE || st == BP_PLAY_ERROR) && s_pl_count > 0)
+        post(CMD_REPLAY, 0, NULL);
 }
 
 void bp_player_next(void) { post(CMD_NEXT, 0, NULL); }

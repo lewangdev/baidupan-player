@@ -5,7 +5,7 @@
 //   BAIDU AUTH / BAIDU STATUS / BAIDU LOGOUT
 //   STATE                        当前页面、网络、授权、播放状态
 //   LIST                         打印当前列表页(目录/文件、游标)
-//   KEY UP|OK|DOWN [CLICK|LONG]  模拟按键(无手环境验收)
+//   KEY UP|OK|DOWN [CLICK|LONG|DOUBLE]  模拟按键(无手环境验收)
 //   UI <n>                       跳到第 n 页(0 首页 1 列表 2 播放 3 授权 4 设置 5 网络 6 账号 7 关于 8 配网热点)
 // 不打印密码与令牌。
 #include "bp_app.h"
@@ -144,10 +144,12 @@ static void console_task(void *arg) {
             int n = sscanf(up + 4, "%11s %11s", button, event);
             int b = n > 0 && !strcmp(button, "UP") ? 0 : n > 0 && !strcmp(button, "OK") ? 1 :
                     n > 0 && !strcmp(button, "DOWN") ? 2 : -1;
-            if (b < 0 || (strcmp(event, "CLICK") && strcmp(event, "LONG")))
-                printf("KEY: usage KEY UP|OK|DOWN [CLICK|LONG]\r\n");
+            int kind = !strcmp(event, "CLICK") ? 0 : !strcmp(event, "LONG") ? 1 :
+                       !strcmp(event, "DOUBLE") ? 2 : -1;
+            if (b < 0 || kind < 0)
+                printf("KEY: usage KEY UP|OK|DOWN [CLICK|LONG|DOUBLE]\r\n");
             else
-                printf("KEY: rc=%d\r\n", bp_test_key(b, !strcmp(event, "LONG")));
+                printf("KEY: rc=%d\r\n", bp_test_key(b, kind));
         } else if (!strncmp(up, "UI", 2)) {
             int pg = atoi(up + 2);
             if (pg < 0 || pg >= BP_PAGE_COUNT) {

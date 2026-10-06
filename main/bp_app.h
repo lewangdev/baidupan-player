@@ -1,4 +1,4 @@
-// main/bp_app.h —— 云盘随身听(Baidu Netdisk Player)应用层公共定义。
+// main/bp_app.h —— 云盘随身听(Baidupan Pocket Player)应用层公共定义。
 //
 // 模块划分:
 //   main.c        初始化、按键分发、页面状态机、心跳
@@ -145,7 +145,7 @@ int  bp_baidu_dlink(uint64_t fs_id, char **out);
 void bp_player_init(void);
 // 以列表快照为播放列表,从 index 开始播放(只取可播放文件)。0=已派发。
 int  bp_player_play_list(const bp_list_t *list, int index);
-void bp_player_toggle_pause(void);
+void bp_player_toggle_pause(void);   // 已停止或出错时重播当前曲目
 void bp_player_next(void);
 void bp_player_prev(void);
 void bp_player_stop(void);
@@ -155,7 +155,7 @@ bool bp_player_active(void);        // 有曲目在缓冲/播放/暂停
 
 // ---- 串口与测试钩子 ----------------------------------------------------------
 void bp_console_start(void);
-int  bp_test_key(int button, bool long_press);   // 0 UP, 1 OK, 2 DOWN
+int  bp_test_key(int button, int kind);   // button 0 UP/1 OK/2 DOWN; kind 0 单击/1 长按/2 双击
 int  bp_test_page(void);
 
 // ---- Wi-Fi 桥接 --------------------------------------------------------------

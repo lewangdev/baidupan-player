@@ -328,6 +328,7 @@ static void build_info_pages(void) {
         "云盘随身听 v" BP_APP_VERSION "\n"
         "上/下：选择 · 调音量\n"
         "OK：确认 · 暂停/继续\n"
+        "播放页双击 OK：停止\n"
         "长按 OK：返回上一级\n"
         "长按上/下：上一首/下一首\n"
         "首页长按 OK：回到播放页\n"

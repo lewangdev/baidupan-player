@@ -27,7 +27,7 @@ static int evt_code(WifiEvent e) {
 void bp_wifi_init(bp_wifi_evt_cb_t cb) {
     s_cb = cb;
     WifiManagerConfig cfg;
-    cfg.station_hostname = "baidupan-player";
+    cfg.station_hostname = "baidupan-pocket-player";
     cfg.station_scan_min_interval_seconds = 5;
     cfg.station_scan_max_interval_seconds = 30;
     if (!WifiManager::GetInstance().Initialize(cfg)) {

@@ -3,7 +3,8 @@
 // 按键(三键:上 / OK / 下):
 //   首页      上/下=选择  OK=进入  长按OK=回到播放页  长按下=熄屏
 //   列表      上/下=选择(长按 ±5)  OK=打开文件夹/播放/翻页  长按OK=上一级/首页
-//   播放页    OK=暂停/继续  上/下=音量  长按上/下=上一首/下一首  长按OK=返回
+//   播放页    OK=暂停/继续(已停止时重播本曲)  双击OK=停止  上/下=音量
+//             长按上/下=上一首/下一首  长按OK=返回
 //   设置/信息 上/下=选择  OK=进入/执行  长按OK=返回
 //   无线网络  OK=开启配网热点(手机连热点后网页配网)  长按OK=返回
 //   配网热点  长按OK=关闭热点并返回(网页配网完成后自动关闭)
@@ -191,7 +192,8 @@ static void handle_input(const input_event_t *in) {
         if (in->event == BSP_BTN_PRESS) s_wake_button = (int)in->btn;
         return;
     }
-    if (in->event == BSP_BTN_PRESS || in->event == BSP_BTN_DOUBLE) return;
+    if (in->event == BSP_BTN_PRESS) return;
+    bool dbl = in->event == BSP_BTN_DOUBLE;
 
     bool click = in->event == BSP_BTN_CLICK;
     bool lng = in->event == BSP_BTN_LONG;
@@ -226,7 +228,12 @@ static void handle_input(const input_event_t *in) {
             break;
 
         case BP_PAGE_PLAYER:
-            if (ok && click) bp_player_toggle_pause();
+            if (ok && dbl) {
+                if (bp_player_active()) {
+                    bp_player_stop();
+                    bp_ui_toast("已停止播放");
+                }
+            } else if (ok && click) bp_player_toggle_pause();
             else if (ok && lng) go(s_player_back);
             else if ((up || down) && click)
                 bp_player_set_volume((uint8_t)bp_volume_step(g_bp.volume, up ? 10 : -10));
@@ -309,11 +316,11 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     (void)xQueueSend(s_input_queue, &in, 0);
 }
 
-int bp_test_key(int button, bool long_press) {
-    if (!s_input_ready || button < 0 || button > 2) return -1;
+int bp_test_key(int button, int kind) {
+    if (!s_input_ready || button < 0 || button > 2 || kind < 0 || kind > 2) return -1;
     static const bsp_btn_t buttons[] = {BSP_BTN_UP, BSP_BTN_OK, BSP_BTN_DOWN};
-    const input_event_t in = {.btn = buttons[button],
-                              .event = long_press ? BSP_BTN_LONG : BSP_BTN_CLICK};
+    static const bsp_btn_ev_t kinds[] = {BSP_BTN_CLICK, BSP_BTN_LONG, BSP_BTN_DOUBLE};
+    const input_event_t in = {.btn = buttons[button], .event = kinds[kind]};
     return xQueueSend(s_input_queue, &in, pdMS_TO_TICKS(100)) == pdTRUE ? 0 : -1;
 }
 
@@ -341,7 +348,7 @@ static void heartbeat_cb(void *arg) {
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "Baidu Netdisk Player v" BP_APP_VERSION);
+    ESP_LOGI(TAG, "Baidupan Pocket Player v" BP_APP_VERSION);
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
