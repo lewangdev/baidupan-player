@@ -315,6 +315,7 @@ static void auth_task(void *arg) {
         s_state = BP_BD_READY;
         sntp_start_once();
         ESP_LOGI(TAG, "AUTH: authorized");
+        bp_app_on_authorized();
     } else if (s_state == BP_BD_WAIT_CODE) {
         s_state = BP_BD_NO_AUTH;
     }

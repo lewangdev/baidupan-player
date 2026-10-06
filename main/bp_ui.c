@@ -62,7 +62,7 @@ static lv_obj_t *s_arc, *s_pl_time, *s_pl_total, *s_pl_state, *s_pl_name, *s_pl_
 static lv_obj_t *s_pl_vol_bar, *s_pl_icon;
 
 // 授权页
-static lv_obj_t *s_auth_qr_box, *s_auth_qr, *s_auth_code, *s_auth_hint;
+static lv_obj_t *s_auth_qr_box, *s_auth_qr, *s_auth_code, *s_auth_hint, *s_auth_title;
 static char s_auth_shown[96];
 
 // 设置/信息页
@@ -71,7 +71,7 @@ static lv_obj_t *s_wifi_info, *s_wifi_action, *s_acct_state, *s_acct_action, *s_
 static bool s_acct_armed;
 
 // 配网热点页
-static lv_obj_t *s_ap_qr, *s_ap_ssid, *s_ap_steps;
+static lv_obj_t *s_ap_qr, *s_ap_ssid, *s_ap_steps, *s_ap_title;
 static char s_ap_shown[33];
 
 // ---- 小工具 ---------------------------------------------------------------------
@@ -259,7 +259,7 @@ static void build_player(void) {
 
 static void build_auth(void) {
     lv_obj_t *p = s_pages[BP_PAGE_AUTH] = page();
-    page_title(p, "连接百度网盘");
+    s_auth_title = page_title(p, "连接百度网盘");
     s_auth_qr_box = box(p, 44, 72, 152, 152, 0xFFFFFF, 12);
     s_auth_qr = lv_qrcode_create(s_auth_qr_box);
     lv_qrcode_set_size(s_auth_qr, 136);
@@ -302,7 +302,7 @@ static void build_info_pages(void) {
     pill_select(item, icon, s_wifi_action, true);
 
     p = s_pages[BP_PAGE_WIFI_AP] = page();
-    page_title(p, "网页配网");
+    s_ap_title = page_title(p, "网页配网");
     lv_obj_t *qr_box = box(p, 60, 70, 120, 120, 0xFFFFFF, 10);
     s_ap_qr = lv_qrcode_create(qr_box);
     lv_qrcode_set_size(s_ap_qr, 108);
@@ -540,7 +540,7 @@ static void refresh_auth(void) {
     const char *hint;
     if (bp_baidu_state() == BP_BD_READY) hint = "授权成功";
     else if (!g_bp.wifi_up) hint = "请先连接 Wi-Fi\n设置 → 无线网络";
-    else if (ready) hint = "手机扫码，登录百度账号并确认授权";
+    else if (ready) hint = "用百度网盘 App 扫码\n并确认授权";
     else hint = "正在获取授权码…";
     set_text_if(s_auth_hint, hint);
     lv_obj_set_y(s_auth_hint, ready ? 262 : 140);
@@ -592,11 +592,6 @@ static void ui_timer_cb(lv_timer_t *t) {
     (void)t;
     refresh_status();
     refresh_toast();
-    // 授权完成后自动回到首页。
-    if (s_page == BP_PAGE_AUTH && bp_baidu_state() == BP_BD_READY) {
-        bp_ui_goto(BP_PAGE_HOME);
-        bp_ui_toast("网盘授权成功");
-    }
     // 网页配网完成(完成页请求 /exit 后热点关闭)后回到网络页看连接结果。
     if (s_page == BP_PAGE_WIFI_AP && !bp_wifi_config_active()) {
         bp_ui_goto(BP_PAGE_WIFI);
@@ -688,6 +683,11 @@ bp_row_kind_t bp_ui_list_row(int *file_index) {
 }
 
 void bp_ui_list_reset_sel(void) { s_sel[BP_PAGE_LIST] = 0; }
+
+void bp_ui_set_onboarding(bool on) {
+    set_text_if(s_ap_title, on ? "第1步 连接网络" : "网页配网");
+    set_text_if(s_auth_title, on ? "第2步 绑定网盘" : "连接百度网盘");
+}
 
 void bp_ui_account_arm(bool armed) {
     s_acct_armed = armed;

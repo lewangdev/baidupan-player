@@ -8,6 +8,10 @@
 //   设置/信息 上/下=选择  OK=进入/执行  长按OK=返回
 //   无线网络  OK=开启配网热点(手机连热点后网页配网)  长按OK=返回
 //   配网热点  长按OK=关闭热点并返回(网页配网完成后自动关闭)
+//
+// 设置向导:首次开机进入配网热点(第 1 步);联网后若未绑定网盘,自动进入扫码绑定
+// (第 2 步);绑定成功直接打开“全部音频”。只在首页/网络/配网页时自动跳转,
+// 用户在绑定页长按 OK 退出后,本次开机不再自动弹出。
 //   熄屏时任意键唤醒(该次按键不触发操作)
 #include "bp_app.h"
 
@@ -44,6 +48,18 @@ static uint32_t s_last_activity_ms;
 static int s_wake_button = -1;
 static bp_page_t s_player_back = BP_PAGE_HOME;
 static bool s_logout_armed;
+static bool s_auth_declined;   // 用户主动退出过绑定页,本次开机不再自动弹出
+
+// 内部事件:后台任务通过按键队列投递,统一由输入任务切换页面。
+#define EVT_WIFI_UP ((bsp_btn_t)100)
+#define EVT_AUTHORIZED ((bsp_btn_t)101)
+
+static void post_event(bsp_btn_t evt) {
+    const input_event_t in = {.btn = evt, .event = BSP_BTN_CLICK};
+    if (s_input_ready) (void)xQueueSend(s_input_queue, &in, 0);
+}
+
+void bp_app_on_authorized(void) { post_event(EVT_AUTHORIZED); }
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -58,6 +74,7 @@ static void on_wifi_event(int evt, const char *data) {
         ESP_LOGI(TAG, "Wi-Fi connected: %s", data);
         g_bp.wifi_up = true;
         bp_baidu_on_wifi(true);
+        post_event(EVT_WIFI_UP);
     } else if (evt == 3) {
         g_bp.wifi_up = false;
         bp_baidu_on_wifi(false);
@@ -181,7 +198,54 @@ static void list_back(void) {
     free(list);
 }
 
+static void set_onboarding(bool on) {
+    if (bsp_lvgl_lock(500)) {
+        bp_ui_set_onboarding(on);
+        bsp_lvgl_unlock();
+    }
+}
+
+// 联网:未绑定网盘就进入第 2 步扫码绑定;已绑定则从配网相关页面回到首页。
+static void on_wifi_up(void) {
+    bp_page_t page = bp_ui_page();
+    bool setup_page = page == BP_PAGE_HOME || page == BP_PAGE_WIFI ||
+                      page == BP_PAGE_WIFI_AP || page == BP_PAGE_AUTH;
+    if (bp_baidu_state() == BP_BD_READY) {
+        if (page == BP_PAGE_WIFI || page == BP_PAGE_WIFI_AP) {
+            set_onboarding(false);
+            bp_ui_toast("网络已连接");
+            go(BP_PAGE_HOME);
+        }
+        return;
+    }
+    if (!setup_page || s_auth_declined) return;
+    screen_off(false);
+    s_last_activity_ms = now_ms();
+    bp_baidu_auth_start();
+    set_onboarding(true);
+    go(BP_PAGE_AUTH);
+    bp_ui_toast("请用百度网盘 App 扫码");
+}
+
+// 绑定成功:在绑定页时直接打开“全部音频”,马上可以选歌。
+static void on_authorized(void) {
+    set_onboarding(false);
+    if (bp_ui_page() != BP_PAGE_AUTH) return;
+    screen_off(false);
+    s_last_activity_ms = now_ms();
+    bp_ui_toast("网盘绑定成功");
+    open_list(BP_SRC_ALL_AUDIO, "/");
+}
+
 static void handle_input(const input_event_t *in) {
+    if (in->btn == EVT_WIFI_UP) {
+        on_wifi_up();
+        return;
+    }
+    if (in->btn == EVT_AUTHORIZED) {
+        on_authorized();
+        return;
+    }
     s_last_activity_ms = now_ms();
 
     // 唤醒手势整体吞掉:物理按键会先 PRESS,再 CLICK/LONG。
@@ -246,6 +310,8 @@ static void handle_input(const input_event_t *in) {
         case BP_PAGE_AUTH:
             if (ok && lng) {
                 bp_baidu_auth_cancel();
+                s_auth_declined = true;
+                set_onboarding(false);
                 go(BP_PAGE_HOME);
             }
             break;
@@ -397,6 +463,7 @@ void app_main(void) {
         // 首次使用:直接开启配网热点,手机扫屏幕二维码即可配网。
         ESP_LOGI(TAG, "no saved Wi-Fi; starting web provisioning hotspot");
         bp_wifi_config_start();
+        set_onboarding(true);
         go(BP_PAGE_WIFI_AP);
     } else {
         bp_wifi_start_station();

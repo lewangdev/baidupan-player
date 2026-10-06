@@ -43,8 +43,8 @@
    The full gate (`./tools/validate.sh`) runs repository checks, host tests and a verified merged image.
 3. **Connect Wi-Fi.** Join the `BaiduPlayer-XXXX` hotspot by scanning the screen; the setup page
    opens (or visit `http://192.168.4.1`). Only 2.4 GHz networks are supported.
-4. **Authorize and play.** Choose *All audio* or *Browse* on the home screen, scan the QR code to
-   authorize, then press OK on any track.
+4. **Bind your Netdisk and play.** Once Wi-Fi connects, the binding page opens by itself. Scan its QR
+   code with the **Baidu Netdisk app** and confirm; *All audio* then opens, so press OK on any track.
 
 > Firmware built from your own credentials embeds your SecretKey. Do not publish your `build/` output.
 

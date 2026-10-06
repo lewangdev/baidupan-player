@@ -23,8 +23,9 @@ integration (device-code QR authorization, token refresh, xpan APIs) follows
    successful test connection, then closes the hotspot and connects. Reopen the hotspot from
    Settings → Wi-Fi with OK. Several networks can be saved. The serial command
    `WIFI SET <ssid>|<password>` also works.
-2. Authorization: choose "All audio" or "Browse" (the first two home-page items). Scan the QR
-   code with a phone, sign in to Baidu, and confirm. The grant is stored on the device; sign out under
+2. Binding: once Wi-Fi connects, the device opens the binding page by itself. Scan the QR code with
+   the Baidu Netdisk app and confirm; *All audio* opens automatically. The grant is stored on the device;
+   sign out under Settings → Netdisk account. If you leave the page with a long OK, bind later from
    Settings → Netdisk account.
 3. Playback: "All audio" lists every MP3/M4A/AAC/WAV file in name order; "Browse" walks folders, also sorted by name.
    Browsing while a track plays pauses it and releases the download connection; press OK on the player to resume. Press OK on a

@@ -125,6 +125,7 @@ int  bp_ui_selected(void);                      // 首页/设置页选中项
 bp_row_kind_t bp_ui_list_row(int *file_index);  // 列表页选中行
 void bp_ui_list_reset_sel(void);
 void bp_ui_account_arm(bool armed);             // 账号页“再按一次确认退出”
+void bp_ui_set_onboarding(bool on);             // 设置向导中:配网/绑定页显示“第N步”标题
 // ---- 百度网盘 ----------------------------------------------------------------
 void bp_baidu_init(void);
 bp_bd_state_t bp_baidu_state(void);
@@ -158,6 +159,9 @@ void bp_player_stop(void);
 void bp_player_set_volume(uint8_t volume);
 void bp_player_get_info(bp_player_info_t *out);
 bool bp_player_active(void);        // 有曲目在缓冲/播放/暂停
+
+// 网盘授权成功(由 bp_baidu 授权任务调用,只投递事件)。
+void bp_app_on_authorized(void);
 
 // ---- 串口与测试钩子 ----------------------------------------------------------
 void bp_console_start(void);
