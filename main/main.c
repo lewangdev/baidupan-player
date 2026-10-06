@@ -7,6 +7,7 @@
 //             长按上/下=上一首/下一首  长按OK=返回
 //   设置/信息 上/下=选择  OK=进入/执行  长按OK=返回
 //   无线网络  OK=开启配网热点(手机连热点后网页配网)  长按OK=返回
+//   屏幕亮度  上/下=调节 5 档(立即生效并保存)  OK/长按OK=返回
 //   配网热点  长按OK=关闭热点并返回(网页配网完成后自动关闭)
 //
 // 设置向导:首次开机进入配网热点(第 1 步);联网后若未绑定网盘,自动进入扫码绑定
@@ -63,10 +64,37 @@ void bp_app_on_authorized(void) { post_event(EVT_AUTHORIZED); }
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
+static void apply_backlight(void) {
+    bsp_display_backlight(g_bp.screen_off ? 0 : bp_brightness_percent(g_bp.brightness));
+}
+
 static void screen_off(bool off) {
     if (g_bp.screen_off == off) return;
     g_bp.screen_off = off;
-    bsp_display_backlight(off ? 0 : 100);
+    apply_backlight();
+}
+
+static void load_brightness(void) {
+    uint8_t level = BP_BRIGHTNESS_LEVELS;
+    nvs_handle_t h;
+    if (nvs_open("bp_ui", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "bri", &level);
+        nvs_close(h);
+    }
+    g_bp.brightness = (uint8_t)bp_brightness_step(level, 0);
+}
+
+static void set_brightness(int level) {
+    level = bp_brightness_step(level, 0);
+    if (level == g_bp.brightness) return;
+    g_bp.brightness = (uint8_t)level;
+    apply_backlight();
+    nvs_handle_t h;
+    if (nvs_open("bp_ui", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "bri", (uint8_t)level);
+        nvs_commit(h);
+        nvs_close(h);
+    }
 }
 
 static void on_wifi_event(int evt, const char *data) {
@@ -320,9 +348,10 @@ static void handle_input(const input_event_t *in) {
             if ((up || down) && click) ui_move(up ? -1 : 1);
             else if (ok && lng) go(BP_PAGE_HOME);
             else if (ok && click) {
-                static const bp_page_t targets[] = {BP_PAGE_WIFI, BP_PAGE_ACCOUNT, BP_PAGE_ABOUT};
+                static const bp_page_t targets[] = {BP_PAGE_WIFI, BP_PAGE_ACCOUNT,
+                                                    BP_PAGE_BRIGHTNESS, BP_PAGE_ABOUT};
                 int sel = bp_ui_selected();
-                if (sel >= 0 && sel < 3) {
+                if (sel >= 0 && sel < (int)(sizeof(targets) / sizeof(targets[0]))) {
                     s_logout_armed = false;
                     go(targets[sel]);
                 }
@@ -363,6 +392,15 @@ static void handle_input(const input_event_t *in) {
 
         case BP_PAGE_ABOUT:
             if (ok && lng) go(BP_PAGE_SETTINGS);
+            break;
+
+        case BP_PAGE_BRIGHTNESS:
+            if (ok && (lng || click)) {
+                go(BP_PAGE_SETTINGS);
+            } else if ((up || down) && click) {
+                set_brightness(bp_brightness_step(g_bp.brightness, up ? 1 : -1));
+                go(BP_PAGE_BRIGHTNESS);   // 立即刷新竖条与档位
+            }
             break;
 
         default:
@@ -438,7 +476,8 @@ void app_main(void) {
         bp_ui_init();
         bsp_lvgl_unlock();
     }
-    bsp_display_backlight(100);
+    load_brightness();
+    apply_backlight();
     s_last_activity_ms = now_ms();
 
     s_input_queue = xQueueCreate(8, sizeof(input_event_t));

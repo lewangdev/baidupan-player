@@ -39,6 +39,7 @@ integration (device-code QR authorization, token refresh, xpan APIs) follows
 | List | Select | Open folder / play / change page | Parent / home | Move 5 rows |
 | Player | Volume ±10 | Pause / resume; double-click: stop (OK again replays) | Back | Previous / next track |
 | Settings and info | Select | Open / run | Back | — |
+| Brightness (Settings) | Level 1–5, applied and saved at once | Back | Back | — |
 | Setup hotspot | — | — | Close hotspot and go back | — |
 
 The screen turns off after 30 s without input while music keeps playing. A key press only wakes it.

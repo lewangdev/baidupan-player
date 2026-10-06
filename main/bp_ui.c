@@ -33,7 +33,7 @@ LV_FONT_DECLARE(bp_font_24);
 #define LIST_ROW_H 32
 #define LIST_TOP 70
 #define HOME_ITEMS 3
-#define SETTINGS_ITEMS 3
+#define SETTINGS_ITEMS 4
 #define TOAST_MS 2200
 
 static lv_obj_t *s_pages[BP_PAGE_COUNT];
@@ -69,6 +69,9 @@ static char s_auth_shown[96];
 static lv_obj_t *s_set_items[SETTINGS_ITEMS], *s_set_icons[SETTINGS_ITEMS], *s_set_texts[SETTINGS_ITEMS];
 static lv_obj_t *s_wifi_info, *s_wifi_action, *s_acct_state, *s_acct_action, *s_acct_hint;
 static bool s_acct_armed;
+
+// 亮度页
+static lv_obj_t *s_bri_bars[BP_BRIGHTNESS_LEVELS], *s_bri_value;
 
 // 配网热点页
 static lv_obj_t *s_ap_qr, *s_ap_ssid, *s_ap_steps, *s_ap_title;
@@ -278,10 +281,11 @@ static void build_auth(void) {
 static void build_settings(void) {
     lv_obj_t *p = s_pages[BP_PAGE_SETTINGS] = page();
     page_title(p, "设置");
-    static const char *icons[SETTINGS_ITEMS] = {LV_SYMBOL_WIFI, LV_SYMBOL_DRIVE, LV_SYMBOL_LIST};
-    static const char *texts[SETTINGS_ITEMS] = {"无线网络", "网盘账号", "关于与按键"};
+    static const char *icons[SETTINGS_ITEMS] = {LV_SYMBOL_WIFI, LV_SYMBOL_DRIVE, LV_SYMBOL_EYE_OPEN,
+                                                LV_SYMBOL_LIST};
+    static const char *texts[SETTINGS_ITEMS] = {"无线网络", "网盘账号", "屏幕亮度", "关于与按键"};
     for (int i = 0; i < SETTINGS_ITEMS; i++)
-        pill(p, 92 + i * 52, icons[i], texts[i], &s_set_items[i], &s_set_icons[i], &s_set_texts[i]);
+        pill(p, 80 + i * 50, icons[i], texts[i], &s_set_items[i], &s_set_icons[i], &s_set_texts[i]);
 }
 
 static lv_obj_t *info_label(lv_obj_t *p, int y) {
@@ -325,6 +329,18 @@ static void build_info_pages(void) {
     pill_select(item, icon, s_acct_action, true);
     s_acct_hint = info_label(p, 224);
     lv_obj_set_style_text_color(s_acct_hint, lv_color_hex(COL_MUTED), 0);
+
+    // 亮度:5 根由矮到高的竖条,点亮的根数即档位。
+    p = s_pages[BP_PAGE_BRIGHTNESS] = page();
+    page_title(p, "屏幕亮度");
+    for (int i = 0; i < BP_BRIGHTNESS_LEVELS; i++) {
+        int h = 28 + i * 18;
+        s_bri_bars[i] = box(p, 28 + i * 38, 210 - h, 28, h, COL_SURFACE2, 8);
+    }
+    s_bri_value = label(p, &lv_font_montserrat_28, COL_TEXT, "");
+    lv_obj_align(s_bri_value, LV_ALIGN_TOP_MID, 0, 222);
+    lv_obj_t *bri_hint = label(p, &bp_font_16, COL_MUTED, "上/下 调节 · 长按 OK 返回");
+    lv_obj_align(bri_hint, LV_ALIGN_TOP_MID, 0, 266);
 
     p = s_pages[BP_PAGE_ABOUT] = page();
     page_title(p, "关于与按键");
@@ -546,6 +562,15 @@ static void refresh_auth(void) {
     lv_obj_set_y(s_auth_hint, ready ? 262 : 140);
 }
 
+static void refresh_brightness(void) {
+    int level = g_bp.brightness;
+    for (int i = 0; i < BP_BRIGHTNESS_LEVELS; i++)
+        lv_obj_set_style_bg_color(s_bri_bars[i], lv_color_hex(i < level ? COL_ACCENT : COL_SURFACE2), 0);
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d / %d", level, BP_BRIGHTNESS_LEVELS);
+    set_text_if(s_bri_value, buf);
+}
+
 static void refresh_settings(void) {
     for (int i = 0; i < SETTINGS_ITEMS; i++)
         pill_select(s_set_items[i], s_set_icons[i], s_set_texts[i], i == s_sel[BP_PAGE_SETTINGS]);
@@ -606,6 +631,7 @@ static void ui_timer_cb(lv_timer_t *t) {
         case BP_PAGE_WIFI: refresh_wifi(); break;
         case BP_PAGE_ACCOUNT: refresh_account(); break;
         case BP_PAGE_WIFI_AP: refresh_wifi_ap(); break;
+        case BP_PAGE_BRIGHTNESS: refresh_brightness(); break;
         default: break;
     }
 }
@@ -646,6 +672,7 @@ void bp_ui_goto(bp_page_t page) {
         case BP_PAGE_WIFI: refresh_wifi(); break;
         case BP_PAGE_ACCOUNT: refresh_account(); break;
         case BP_PAGE_WIFI_AP: refresh_wifi_ap(); break;
+        case BP_PAGE_BRIGHTNESS: refresh_brightness(); break;
         default: break;
     }
 }

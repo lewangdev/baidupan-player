@@ -276,6 +276,19 @@ int bp_volume_step(int volume, int delta) {
     return v;
 }
 
+uint8_t bp_brightness_percent(int level) {
+    // 低档间隔小、高档间隔大,人眼对暗处亮度变化更敏感。
+    static const uint8_t PERCENT[BP_BRIGHTNESS_LEVELS] = {10, 25, 45, 70, 100};
+    return PERCENT[bp_brightness_step(level, 0) - 1];
+}
+
+int bp_brightness_step(int level, int delta) {
+    int v = level + delta;
+    if (v < 1) v = 1;
+    if (v > BP_BRIGHTNESS_LEVELS) v = BP_BRIGHTNESS_LEVELS;
+    return v;
+}
+
 int bp_playlist_move(int current, int count, int delta, bool wrap) {
     if (count <= 0) return -1;
     int next = current + delta;

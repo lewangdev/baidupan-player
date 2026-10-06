@@ -56,6 +56,7 @@
 | List | Select | Open folder / play / page | Parent / home | Move 5 rows |
 | Player | Volume ±10 | Pause / resume; double-click: stop (OK again replays) | Back | Previous / next track |
 | Wi-Fi | — | Start setup hotspot | Back | — |
+| Brightness | Level 1–5 (applies and saves immediately) | Back | Back | — |
 
 ## Supported audio
 

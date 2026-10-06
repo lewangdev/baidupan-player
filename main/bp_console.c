@@ -6,7 +6,7 @@
 //   STATE                        当前页面、网络、授权、播放状态
 //   LIST                         打印当前列表页(目录/文件、游标)
 //   KEY UP|OK|DOWN [CLICK|LONG|DOUBLE]  模拟按键(无手环境验收)
-//   UI <n>                       跳到第 n 页(0 首页 1 列表 2 播放 3 授权 4 设置 5 网络 6 账号 7 关于 8 配网热点)
+//   UI <n>                       跳到第 n 页(0 首页 1 列表 2 播放 3 授权 4 设置 5 网络 6 账号 7 关于 8 配网热点 9 亮度)
 // 不打印密码与令牌。
 #include "bp_app.h"
 
@@ -97,9 +97,9 @@ static void cmd_baidu(const char *arg) {
 static void cmd_state(void) {
     bp_player_info_t pi;
     bp_player_get_info(&pi);
-    printf("STATE: page=%d wifi=%d bd=%d off=%d vol=%u play=%d pos=%lu/%lu idx=%d/%d "
+    printf("STATE: page=%d wifi=%d bd=%d off=%d vol=%u bri=%u play=%d pos=%lu/%lu idx=%d/%d "
            "rate=%lu ch=%u kbps=%lu buf=%u%% err=%s name=%s\r\n",
-           bp_test_page(), g_bp.wifi_up, bp_baidu_state(), g_bp.screen_off, g_bp.volume,
+           bp_test_page(), g_bp.wifi_up, bp_baidu_state(), g_bp.screen_off, g_bp.volume, g_bp.brightness,
            pi.state, (unsigned long)pi.pos_ms, (unsigned long)pi.total_ms, pi.index + 1,
            pi.count, (unsigned long)pi.rate, pi.channels, (unsigned long)pi.kbps,
            pi.buffer_pct, pi.error ? pi.error : "-", pi.name);

@@ -16,7 +16,7 @@
 
 #include "bp_media.h"
 
-#define BP_APP_VERSION "0.3.0"
+#define BP_APP_VERSION "0.3.1"
 #define BP_NAME_MAX 96
 #define BP_PAGE_SIZE 12       // 每次向网盘请求的条目数(受 JSON 内存预算约束)
 #define BP_PLAYLIST_MAX BP_PAGE_SIZE
@@ -66,6 +66,7 @@ typedef enum {
     BP_PAGE_ACCOUNT,
     BP_PAGE_ABOUT,
     BP_PAGE_WIFI_AP,      // SoftAP 网页配网
+    BP_PAGE_BRIGHTNESS,   // 屏幕亮度(5 档)
     BP_PAGE_COUNT,
 } bp_page_t;
 
@@ -102,7 +103,8 @@ typedef struct {
 typedef struct {
     volatile bool wifi_up;
     volatile bool screen_off;
-    volatile uint8_t volume;   // 0..100
+    volatile uint8_t volume;       // 0..100
+    volatile uint8_t brightness;   // 屏幕亮度档位 1..BP_BRIGHTNESS_LEVELS
 } bp_state_t;
 
 extern bp_state_t g_bp;

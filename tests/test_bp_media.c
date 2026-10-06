@@ -133,6 +133,12 @@ static void test_misc(void) {
     assert(bp_playlist_move(2, 3, 1, true) == 0);
     assert(bp_playlist_move(0, 3, -1, true) == 2);
     assert(bp_playlist_move(0, 0, 1, true) == -1);
+    assert(bp_brightness_percent(1) == 10 && bp_brightness_percent(5) == 100);
+    for (int l = 1; l < BP_BRIGHTNESS_LEVELS; l++)
+        assert(bp_brightness_percent(l) < bp_brightness_percent(l + 1));   // 单调递增
+    assert(bp_brightness_percent(0) == 10 && bp_brightness_percent(9) == 100);
+    assert(bp_brightness_step(5, 1) == 5 && bp_brightness_step(1, -1) == 1);
+    assert(bp_brightness_step(3, 1) == 4 && bp_brightness_step(3, -1) == 2);
 }
 
 // 128 kbps / 44.1 kHz / 立体声 MPEG-1 Layer III 帧头,无填充:帧长 417。

@@ -94,5 +94,11 @@ size_t bp_downmix_s16(int16_t *pcm, size_t frames);
 // 音量步进并夹到 [0, 100]。
 int bp_volume_step(int volume, int delta);
 
+// 屏幕亮度:共 BP_BRIGHTNESS_LEVELS 档(1..5),返回背光百分比;越界按最近一档处理。
+#define BP_BRIGHTNESS_LEVELS 5
+uint8_t bp_brightness_percent(int level);
+// 档位步进并夹到 [1, BP_BRIGHTNESS_LEVELS]。
+int bp_brightness_step(int level, int delta);
+
 // 播放列表索引移动。wrap=false 时越界返回 -1。
 int bp_playlist_move(int current, int count, int delta, bool wrap);
