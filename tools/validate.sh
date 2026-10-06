@@ -36,6 +36,15 @@ run_static_checks() {
         tests/test_bp_media.c main/bp_media.c \
         -o "${test_dir}/test_bp_media"
     "${test_dir}/test_bp_media"
+    python3 tools/obfuscate_keys.py --in main/bp_baidu_keys.example.h \
+        --out "${test_dir}/bp_keys_obf.h"
+    if grep -q REPLACE_WITH "${test_dir}/bp_keys_obf.h"; then
+        echo "bp_keys_obf.h contains plaintext credentials" >&2
+        return 1
+    fi
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -I"${test_dir}" \
+        tests/test_bp_keys.c main/bp_keys.c -o "${test_dir}/test_bp_keys"
+    "${test_dir}/test_bp_keys"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
@@ -91,6 +100,10 @@ run_firmware_checks() (
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
     python3 tools/verify_firmware.py "${validation_build_dir}"
+    python3 tools/check_firmware_secrets.py \
+        "${validation_build_dir}/FoloToy-AI-Passport.bin" \
+        "${validation_build_dir}/FoloToy-AI-Passport.elf" \
+        "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
     PYTHONDONTWRITEBYTECODE=1 python3 tools/archive_firmware.py create \
         "${validation_build_dir}" --archive-root "${repo_root}/build/firmware"
     mkdir -p "${repo_root}/build"

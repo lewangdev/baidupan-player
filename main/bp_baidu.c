@@ -10,13 +10,9 @@
 // 令牌:refresh_token 单次有效。多个工作任务可能同时遇到 errno=111,所以刷新在
 // 互斥锁内进行,并先比较调用方看到的旧令牌,已被别人刷新过就直接复用。
 #include "bp_app.h"
-// 本地凭据(被 Git 忽略);缺失时用占位符编译,设备上无法授权。
-#if __has_include("bp_baidu_keys.h")
-#include "bp_baidu_keys.h"
-#else
-#include "bp_baidu_keys.example.h"
-#warning "main/bp_baidu_keys.h missing: building with placeholder Baidu credentials"
-#endif
+// 应用凭据在构建时编码(tools/obfuscate_keys.py),此处只在需要时解码到栈上并立即清零;
+// 本文件不包含 bp_baidu_keys.h,固件中没有明文凭据。
+#include "bp_keys.h"
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -65,16 +61,31 @@ static bp_list_req_t s_list_pending_req;
 // ---- 令牌持久化 ---------------------------------------------------------------
 // 缓存的授权与应用凭据绑定:换了 AppKey/Secret(或旧缓存无指纹)需重新扫码。
 static bool credential_fingerprint(unsigned char out[16]) {
+    char appkey[BP_KEY_BUF], secret[BP_KEY_BUF];
+    size_t al = bp_key_get(BP_KEY_APPKEY, appkey, sizeof(appkey));
+    size_t sl = bp_key_get(BP_KEY_SECRET, secret, sizeof(secret));
     mbedtls_md5_context ctx;
     mbedtls_md5_init(&ctx);
-    bool ok = mbedtls_md5_starts(&ctx) == 0 &&
-              mbedtls_md5_update(&ctx, (const unsigned char *)BP_BAIDU_APPKEY,
-                                 sizeof(BP_BAIDU_APPKEY)) == 0 &&
-              mbedtls_md5_update(&ctx, (const unsigned char *)BP_BAIDU_SECRET,
-                                 sizeof(BP_BAIDU_SECRET)) == 0 &&
+    // 长度含结尾 NUL:与旧版 sizeof(字符串宏) 的指纹一致,升级后已有授权不失效。
+    bool ok = al && sl && mbedtls_md5_starts(&ctx) == 0 &&
+              mbedtls_md5_update(&ctx, (const unsigned char *)appkey, al + 1) == 0 &&
+              mbedtls_md5_update(&ctx, (const unsigned char *)secret, sl + 1) == 0 &&
               mbedtls_md5_finish(&ctx, out) == 0;
     mbedtls_md5_free(&ctx);
+    bp_key_wipe(appkey, sizeof(appkey));
+    bp_key_wipe(secret, sizeof(secret));
     return ok;
+}
+
+// 拼接带 client_id(及可选 client_secret)的 OAuth URL;用完须 bp_key_wipe(url)。
+static void oauth_url(char *url, size_t cap, const char *prefix, bool with_secret) {
+    char appkey[BP_KEY_BUF], secret[BP_KEY_BUF] = "";
+    bp_key_get(BP_KEY_APPKEY, appkey, sizeof(appkey));
+    if (with_secret) bp_key_get(BP_KEY_SECRET, secret, sizeof(secret));
+    snprintf(url, cap, "%s&client_id=%s%s%s", prefix, appkey,
+             with_secret ? "&client_secret=" : "", secret);
+    bp_key_wipe(appkey, sizeof(appkey));
+    bp_key_wipe(secret, sizeof(secret));
 }
 
 static void nvs_save_tokens(void) {
@@ -220,12 +231,13 @@ static int token_refresh(const char *seen) {
     if (seen && strcmp(seen, s_access) != 0 && s_access[0]) {
         rc = 0;
     } else if (s_refresh[0]) {
-        char url[512], resp[1024];
-        snprintf(url, sizeof(url),
+        char prefix[256], url[512], resp[1024];
+        snprintf(prefix, sizeof(prefix),
                  "https://openapi.baidu.com/oauth/2.0/token?grant_type=refresh_token"
-                 "&refresh_token=%s&client_id=" BP_BAIDU_APPKEY
-                 "&client_secret=" BP_BAIDU_SECRET, s_refresh);
+                 "&refresh_token=%s", s_refresh);
+        oauth_url(url, sizeof(url), prefix, true);
         rc = token_exchange_locked(url, resp, sizeof(resp));
+        bp_key_wipe(url, sizeof(url));
         // 刷新令牌被拒(过期/已吊销)才需要重新扫码;网络失败保留旧令牌下次再试。
         if (rc == -2) {
             s_access[0] = s_refresh[0] = 0;
@@ -248,11 +260,12 @@ static void auth_task(void *arg) {
     while (resp && rc != 0 && !s_auth_cancel) {
         s_user_code[0] = s_verify_url[0] = 0;
         bool got_code = false;
-        snprintf(url, sizeof(url),
-                 "https://openapi.baidu.com/oauth/2.0/device/code"
-                 "?response_type=device_code&client_id=" BP_BAIDU_APPKEY
-                 "&scope=basic,netdisk");
-        if (g_bp.wifi_up && http_get(url, resp, 1024, 12000) == 0) {
+        oauth_url(url, sizeof(url),
+                  "https://openapi.baidu.com/oauth/2.0/device/code"
+                  "?response_type=device_code&scope=basic,netdisk", false);
+        bool fetched = g_bp.wifi_up && http_get(url, resp, 1024, 12000) == 0;
+        bp_key_wipe(url, sizeof(url));
+        if (fetched) {
             cJSON *root = cJSON_Parse(resp);
             const cJSON *dc = cJSON_GetObjectItem(root, "device_code");
             const cJSON *uc = cJSON_GetObjectItem(root, "user_code");
@@ -279,13 +292,15 @@ static void auth_task(void *arg) {
                         vTaskDelay(pdMS_TO_TICKS(1000));
                     if (s_auth_cancel || boot_sec() >= deadline) break;
                     if (!g_bp.wifi_up) continue;
-                    snprintf(url, sizeof(url),
+                    char prefix[192];
+                    snprintf(prefix, sizeof(prefix),
                              "https://openapi.baidu.com/oauth/2.0/token?grant_type=device_token"
-                             "&code=%s&client_id=" BP_BAIDU_APPKEY
-                             "&client_secret=" BP_BAIDU_SECRET, device_code);
+                             "&code=%s", device_code);
+                    oauth_url(url, sizeof(url), prefix, true);
                     xSemaphoreTake(s_tok_lock, portMAX_DELAY);
                     rc = token_exchange_locked(url, resp, 1024);
                     xSemaphoreGive(s_tok_lock);
+                    bp_key_wipe(url, sizeof(url));
                     if (rc == 0) break;
                 }
             }
@@ -603,6 +618,8 @@ void bp_baidu_on_wifi(bool up) {
 
 void bp_baidu_init(void) {
     s_tok_lock = xSemaphoreCreateMutex();
+    if (bp_keys_placeholder())
+        ESP_LOGW(TAG, "built with placeholder Baidu credentials; authorization will fail");
     nvs_load_tokens();
     s_state = s_access[0] ? BP_BD_READY : BP_BD_NO_AUTH;
     if (s_state == BP_BD_READY) ESP_LOGI(TAG, "stored authorization found");
