@@ -71,10 +71,12 @@ static int s_pl_count;
 static int s_pl_index;
 static bp_list_req_t s_pl_req;
 static bool s_pl_has_more;
+static uint32_t s_pl_next_start;
 static bp_file_t s_pending_list[BP_PLAYLIST_MAX];   // CMD_PLAY 携带的数据
 static int s_pending_count, s_pending_index;
 static bp_list_req_t s_pending_req;
 static bool s_pending_has_more;
+static uint32_t s_pending_next_start;
 
 static bp_player_info_t s_info;
 static volatile bool s_paused;
@@ -570,6 +572,7 @@ static bool continue_next_page(void) {
     if (!page) return false;
     bp_list_req_t req = s_pl_req;
     req.page++;
+    req.start = s_pl_next_start;
     bool started = false;
     set_state(BP_PLAY_RESOLVING, NULL);
     if (bp_baidu_list_fetch(&req, page) == 0) {
@@ -579,6 +582,7 @@ static bool continue_next_page(void) {
                 s_playlist[n++] = page->files[i];
         s_pl_req = req;
         s_pl_has_more = page->has_more;
+        s_pl_next_start = page->next_start;
         if (n) {
             s_pl_count = n;
             start_track(0);
@@ -609,6 +613,7 @@ static void ctrl_task(void *arg) {
                 s_pl_count = s_pending_count;
                 s_pl_req = s_pending_req;
                 s_pl_has_more = s_pending_has_more;
+                s_pl_next_start = s_pending_next_start;
                 int index = s_pending_index;
                 portEXIT_CRITICAL(&s_mux);
                 consecutive_failures = 0;
@@ -678,6 +683,7 @@ int bp_player_play_list(const bp_list_t *list, int index) {
     s_pending_index = start;
     s_pending_req = list->req;
     s_pending_has_more = list->has_more;
+    s_pending_next_start = list->next_start;
     portEXIT_CRITICAL(&s_mux);
     if (start < 0) return -2;
     post(CMD_PLAY, 0, NULL);

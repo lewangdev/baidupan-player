@@ -363,9 +363,12 @@ static bool memory_allows_request(void) {
            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) >= BD_MIN_BLOCK_FOR_TLS;
 }
 
-static void parse_entries(const cJSON *list, bp_list_t *out) {
+// 把一批原始条目中可显示的追加到 out。返回本批实际消费的原始条目数:
+// out 已满时停在第一个放不下的可显示条目上,下一页从这里继续。
+static int append_entries(const cJSON *list, bp_list_t *out, bool *stopped) {
     int n = cJSON_GetArraySize(list);
-    for (int i = 0; i < n && out->count < BP_PAGE_SIZE; i++) {
+    *stopped = false;
+    for (int i = 0; i < n; i++) {
         const cJSON *e = cJSON_GetArrayItem(list, i);
         const cJSON *id = cJSON_GetObjectItem(e, "fs_id");
         const cJSON *name = cJSON_GetObjectItem(e, "server_filename");
@@ -374,10 +377,16 @@ static void parse_entries(const cJSON *list, bp_list_t *out) {
         if (!cJSON_IsNumber(id) || !cJSON_IsString(name) || id->valuedouble < 1 ||
             id->valuedouble > 9007199254740991.0)
             continue;
+        bool is_dir = cJSON_IsNumber(isdir) && isdir->valueint != 0;
+        if (!bp_media_listable(is_dir, name->valuestring)) continue;   // 不支持的格式不显示
+        if (out->count >= BP_PAGE_SIZE) {
+            *stopped = true;
+            return i;
+        }
         bp_file_t *f = &out->files[out->count++];
         f->fs_id = (uint64_t)id->valuedouble;
         f->size = cJSON_IsNumber(size) ? (uint64_t)size->valuedouble : 0;
-        f->is_dir = cJSON_IsNumber(isdir) && isdir->valueint != 0;
+        f->is_dir = is_dir;
         // 超长文件名截断到缓冲,保持 UTF-8 完整(回退到字符起始字节)。
         strlcpy(f->name, name->valuestring, sizeof(f->name));
         size_t len = strlen(f->name);
@@ -387,39 +396,30 @@ static void parse_entries(const cJSON *list, bp_list_t *out) {
             f->name[cut] = 0;
         }
     }
+    return n;
 }
 
-int bp_baidu_list_fetch(const bp_list_req_t *req, bp_list_t *out) {
-    memset(out, 0, sizeof(*out));
-    out->req = *req;
-    out->status = -1;
-    if (!g_bp.wifi_up || s_state != BP_BD_READY) return -1;
-    if (!memory_allows_request()) return -5;
-    char *resp = malloc(BD_LIST_RESP_MAX);
-    char *url = malloc(1280);
-    if (!resp || !url) {
-        free(resp);
-        free(url);
-        return -4;
-    }
+// 请求一批原始条目(从 cursor 起 BP_PAGE_SIZE 条)并追加。
+// 返回 0 成功;*consumed 为消费的原始条目数,*api_more 表示接口在本批之后还有数据。
+static int fetch_chunk(const bp_list_req_t *req, uint32_t cursor, bp_list_t *out,
+                       char *resp, char *url, uint32_t *consumed, bool *api_more) {
     char access[sizeof(s_access)];
     int result = -1;
     for (int attempt = 0; attempt < 2; attempt++) {
         copy_access(access, sizeof(access));
-        int start = req->page * BP_PAGE_SIZE;
         if (req->source == BP_SRC_ALL_AUDIO) {
             snprintf(url, 1280,
                      "https://pan.baidu.com/rest/2.0/xpan/multimedia?method=categorylist"
                      "&access_token=%s&category=2&parent_path=%%2F&recursion=1"
-                     "&ext=mp3%%2Cwav&order=time&desc=1&start=%d&limit=%d",
-                     access, start, BP_PAGE_SIZE);
+                     "&ext=mp3%%2Cwav&order=time&desc=1&start=%lu&limit=%d",
+                     access, (unsigned long)cursor, BP_PAGE_SIZE);
         } else {
             char dir_enc[3 * BP_PATH_MAX];
             url_encode(req->dir, dir_enc, sizeof(dir_enc));
             snprintf(url, 1280,
                      "https://pan.baidu.com/rest/2.0/xpan/file?method=list"
-                     "&access_token=%s&dir=%s&order=name&start=%d&limit=%d",
-                     access, dir_enc, start, BP_PAGE_SIZE);
+                     "&access_token=%s&dir=%s&order=name&start=%lu&limit=%d",
+                     access, dir_enc, (unsigned long)cursor, BP_PAGE_SIZE);
         }
         int rc = http_get(url, resp, BD_LIST_RESP_MAX, 15000);
         if (rc == -2) { result = -2; break; }
@@ -435,14 +435,16 @@ int bp_baidu_list_fetch(const bp_list_req_t *req, bp_list_t *out) {
         }
         if (code == 0) {
             const cJSON *list = cJSON_GetObjectItem(root, "list");
-            if (cJSON_IsArray(list)) parse_entries(list, out);
+            int raw = cJSON_IsArray(list) ? cJSON_GetArraySize(list) : 0;
+            bool stopped = false;
+            *consumed = raw ? (uint32_t)append_entries(list, out, &stopped) : 0;
             const cJSON *more = cJSON_GetObjectItem(root, "has_more");
-            out->has_more = cJSON_IsNumber(more) ? more->valueint != 0
-                                                 : cJSON_GetArraySize(list) >= BP_PAGE_SIZE;
-            out->status = 2;
+            bool chunk_more = cJSON_IsNumber(more) ? more->valueint != 0 : raw >= BP_PAGE_SIZE;
+            *api_more = stopped || chunk_more;
             result = 0;
         } else if (code == -9) {   // 目录不存在
-            out->status = 2;
+            *consumed = 0;
+            *api_more = false;
             result = 0;
         } else {
             ESP_LOGW(TAG, "list errno=%d", code);
@@ -450,9 +452,49 @@ int bp_baidu_list_fetch(const bp_list_req_t *req, bp_list_t *out) {
         cJSON_Delete(root);
         break;
     }
+    return result;
+}
+
+// 从 req->start 起向后扫描,直到凑满一页可显示条目、接口没有更多,或达到扫描上限
+// (避免满是图片/文档的目录一次读太久;没凑满时仍可“下一页”继续)。
+#define BD_MAX_SCAN_CHUNKS 6
+
+int bp_baidu_list_fetch(const bp_list_req_t *req, bp_list_t *out) {
+    memset(out, 0, sizeof(*out));
+    out->req = *req;
+    out->status = -1;
+    out->next_start = req->start;
+    if (!g_bp.wifi_up || s_state != BP_BD_READY) return -1;
+    if (!memory_allows_request()) return -5;
+    char *resp = malloc(BD_LIST_RESP_MAX);
+    char *url = malloc(1280);
+    if (!resp || !url) {
+        free(resp);
+        free(url);
+        return -4;
+    }
+    uint32_t cursor = req->start;
+    bool api_more = true;
+    int result = 0;
+    for (int chunk = 0; chunk < BD_MAX_SCAN_CHUNKS && api_more && out->count < BP_PAGE_SIZE;
+         chunk++) {
+        uint32_t consumed = 0;
+        int rc = fetch_chunk(req, cursor, out, resp, url, &consumed, &api_more);
+        if (rc != 0) {
+            // 第一批就失败才算出错;后续批次失败则返回已读到的部分,下一页可重试。
+            if (chunk == 0) result = rc;
+            else api_more = true;
+            break;
+        }
+        cursor += consumed;
+    }
     free(url);
     free(resp);
-    return result;
+    if (result != 0) return result;
+    out->next_start = cursor;
+    out->has_more = api_more;
+    out->status = 2;
+    return 0;
 }
 
 static void list_task(void *arg) {

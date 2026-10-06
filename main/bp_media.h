@@ -25,6 +25,9 @@ typedef struct {
 // 按扩展名(不区分大小写)判断可播放格式。
 bp_format_t bp_media_format(const char *name);
 
+// 浏览网盘时是否显示该条目:文件夹或可播放的音频。
+bool bp_media_listable(bool is_dir, const char *name);
+
 // ID3v2 标签总长度(含 10 字节头和可选尾);无标签或数据不足 10 字节返回 0。
 size_t bp_id3v2_size(const uint8_t *buf, size_t len);
 

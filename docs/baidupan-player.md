@@ -45,7 +45,8 @@ The screen turns off after 30 s without input while music keeps playing. A key p
 
 - MP3 (MPEG-1/2 Layer III, CBR/VBR, any sample rate) and 16-bit PCM WAV (mono/stereo, 8–48 kHz).
   The single speaker receives a mono downmix.
-- FLAC, AAC/M4A, OGG and other formats are not supported and appear greyed out.
+- FLAC, AAC/M4A, OGG and other formats are not supported. Browsing shows only folders and
+  playable files; everything else is hidden.
 - Seeking is not supported. VBR MP3 duration is estimated from the average bitrate.
 - Interrupted downloads resume with HTTP Range, including after a long pause closes the connection.
 - Baidu throttles downloads for non-member accounts, which can affect high-bitrate WAV; MP3 is usually fine.

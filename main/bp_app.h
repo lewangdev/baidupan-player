@@ -34,9 +34,14 @@ typedef enum {
     BP_SRC_ALL_AUDIO,
 } bp_source_t;
 
+// 游标翻页:浏览目录时会过滤掉不支持的文件,所以页码不能换算成接口偏移;
+// start 为本页在网盘接口里的起始偏移,next_start 为下一页的起始偏移。
+#define BP_PAGE_HISTORY 64
+
 typedef struct {
     bp_source_t source;
-    int page;
+    int page;              // 显示用页码(0 起)
+    uint32_t start;        // 接口偏移
     char dir[BP_PATH_MAX];
 } bp_list_req_t;
 
@@ -46,6 +51,7 @@ typedef struct {
     int status;
     int count;
     bool has_more;
+    uint32_t next_start;
     bp_file_t files[BP_PAGE_SIZE];
 } bp_list_t;
 

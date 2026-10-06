@@ -96,9 +96,13 @@ static bool require_auth(void) {
     return false;
 }
 
-static void open_list(bp_source_t source, const char *dir, int page) {
-    bp_list_req_t req = {.source = source, .page = page};
+// 每页在网盘接口里的起始偏移(过滤后页码不能直接换算),用于“上一页”。
+static uint32_t s_page_start[BP_PAGE_HISTORY];
+
+static void open_list_at(bp_source_t source, const char *dir, int page, uint32_t start) {
+    bp_list_req_t req = {.source = source, .page = page, .start = start};
     strlcpy(req.dir, dir ? dir : "/", sizeof(req.dir));
+    if (page >= 0 && page < BP_PAGE_HISTORY) s_page_start[page] = start;
     int rc = bp_baidu_list_request(&req);
     if (rc == -3) {
         bp_ui_toast("请稍候");
@@ -110,6 +114,10 @@ static void open_list(bp_source_t source, const char *dir, int page) {
         bp_ui_goto(BP_PAGE_LIST);
         bsp_lvgl_unlock();
     }
+}
+
+static void open_list(bp_source_t source, const char *dir) {
+    open_list_at(source, dir, 0, 0);
 }
 
 static void list_activate(void) {
@@ -124,18 +132,24 @@ static void list_activate(void) {
     }
     switch (kind) {
         case BP_ROW_RETRY:
-            open_list(list->req.source, list->req.dir, list->req.page);
+            open_list_at(list->req.source, list->req.dir, list->req.page, list->req.start);
             break;
-        case BP_ROW_PREV:
         case BP_ROW_NEXT:
-            open_list(list->req.source, list->req.dir, list->req.page + (kind == BP_ROW_NEXT ? 1 : -1));
+            open_list_at(list->req.source, list->req.dir, list->req.page + 1, list->next_start);
             break;
+        case BP_ROW_PREV: {
+            int prev = list->req.page - 1;
+            // 超出历史记录(极深的翻页)时回到第一页。
+            if (prev >= BP_PAGE_HISTORY) open_list(list->req.source, list->req.dir);
+            else open_list_at(list->req.source, list->req.dir, prev, s_page_start[prev]);
+            break;
+        }
         case BP_ROW_FILE: {
             const bp_file_t *f = &list->files[fi];
             if (f->is_dir) {
                 char child[BP_PATH_MAX];
                 if (bp_path_child(list->req.dir, f->name, child, sizeof(child)))
-                    open_list(BP_SRC_DIR, child, 0);
+                    open_list(BP_SRC_DIR, child);
                 else
                     bp_ui_toast("路径太长");
             } else if (bp_media_format(f->name) == BP_FMT_UNKNOWN) {
@@ -158,7 +172,7 @@ static void list_back(void) {
     bp_baidu_list_snapshot(list);
     char parent[BP_PATH_MAX];
     if (list->req.source == BP_SRC_DIR && bp_path_parent(list->req.dir, parent, sizeof(parent)))
-        open_list(BP_SRC_DIR, parent, 0);
+        open_list(BP_SRC_DIR, parent);
     else
         go(BP_PAGE_HOME);
     free(list);
@@ -200,7 +214,7 @@ static void handle_input(const input_event_t *in) {
             } else if (ok && click) {
                 int sel = bp_ui_selected();
                 if (sel == 2) go(BP_PAGE_SETTINGS);
-                else if (require_auth()) open_list(sel == 0 ? BP_SRC_ALL_AUDIO : BP_SRC_DIR, "/", 0);
+                else if (require_auth()) open_list(sel == 0 ? BP_SRC_ALL_AUDIO : BP_SRC_DIR, "/");
             }
             break;
 

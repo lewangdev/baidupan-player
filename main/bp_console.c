@@ -4,6 +4,7 @@
 //   WIFI AP / WIFI AP STOP       开启 / 关闭 SoftAP 网页配网热点
 //   BAIDU AUTH / BAIDU STATUS / BAIDU LOGOUT
 //   STATE                        当前页面、网络、授权、播放状态
+//   LIST                         打印当前列表页(目录/文件、游标)
 //   KEY UP|OK|DOWN [CLICK|LONG]  模拟按键(无手环境验收)
 //   UI <n>                       跳到第 n 页(0 首页 1 列表 2 播放 3 授权 4 设置 5 网络 6 账号 7 关于 8 配网热点)
 // 不打印密码与令牌。
@@ -104,6 +105,16 @@ static void cmd_state(void) {
            pi.buffer_pct, pi.error ? pi.error : "-", pi.name);
 }
 
+static void cmd_list(void) {
+    static bp_list_t list;   // 约 1.7 KiB,不放在任务栈上
+    bp_baidu_list_snapshot(&list);
+    printf("LIST: src=%d dir=%s page=%d start=%lu next=%lu more=%d status=%d count=%d\r\n",
+           list.req.source, list.req.dir, list.req.page, (unsigned long)list.req.start,
+           (unsigned long)list.next_start, list.has_more, list.status, list.count);
+    for (int i = 0; i < list.count; i++)
+        printf("  [%d] %s %s\r\n", i, list.files[i].is_dir ? "DIR " : "FILE", list.files[i].name);
+}
+
 static void console_task(void *arg) {
     (void)arg;
     char line[160], up[160];
@@ -126,6 +137,8 @@ static void console_task(void *arg) {
             cmd_baidu(a);
         } else if (!strcmp(up, "STATE")) {
             cmd_state();
+        } else if (!strcmp(up, "LIST")) {
+            cmd_list();
         } else if (!strncmp(up, "KEY ", 4)) {
             char button[12] = "", event[12] = "CLICK";
             int n = sscanf(up + 4, "%11s %11s", button, event);

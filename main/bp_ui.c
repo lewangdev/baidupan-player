@@ -387,7 +387,8 @@ static void refresh_home(void) {
 
 static bool list_changed(const bp_list_t *a, const bp_list_t *b) {
     return a->status != b->status || a->count != b->count || a->has_more != b->has_more ||
-           a->req.page != b->req.page || a->req.source != b->req.source ||
+           a->req.page != b->req.page || a->req.start != b->req.start ||
+           a->req.source != b->req.source ||
            strcmp(a->req.dir, b->req.dir) ||
            (a->count && a->files[0].fs_id != b->files[0].fs_id);
 }
@@ -426,7 +427,7 @@ static void refresh_list(void) {
     if (s_list.status == 1 || s_list.status == 0) msg = "正在读取网盘…";
     else if (s_list.status < 0) msg = "读取失败\n按 OK 重试";
     else if (s_list_rows == 0) msg = s_list.req.source == BP_SRC_ALL_AUDIO ?
-                                     "网盘里还没有 MP3/WAV\n按 OK 刷新" : "这个文件夹是空的";
+                                     "网盘里还没有 MP3/WAV\n按 OK 刷新" : "这里没有可播放的音频";
     if (msg) {
         set_text_if(s_list_msg, msg);
         lv_obj_remove_flag(s_list_msg, LV_OBJ_FLAG_HIDDEN);

@@ -38,6 +38,13 @@ static void test_format(void) {
     assert(bp_media_format(".mp3") == BP_FMT_UNKNOWN);
     assert(bp_media_format("mp3") == BP_FMT_UNKNOWN);
     assert(bp_media_format(NULL) == BP_FMT_UNKNOWN);
+    assert(bp_media_listable(true, "照片"));
+    assert(bp_media_listable(true, "a.jpg"));      // 文件夹名带扩展名也显示
+    assert(bp_media_listable(false, "歌.MP3"));
+    assert(bp_media_listable(false, "x.wav"));
+    assert(!bp_media_listable(false, "封面.jpg"));
+    assert(!bp_media_listable(false, "歌.flac"));
+    assert(!bp_media_listable(false, "README"));
 }
 
 static void test_id3(void) {

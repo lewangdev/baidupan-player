@@ -64,7 +64,8 @@
 | MP3 | MPEG-1/2 Layer III, CBR and VBR, any sample rate (Helix decoder) |
 | WAV | 16-bit PCM, mono or stereo, 8–48 kHz |
 
-Stereo is downmixed for the single speaker. FLAC, AAC/M4A and OGG are listed but greyed out.
+Stereo is downmixed for the single speaker. Browsing shows only folders and playable files; FLAC,
+AAC/M4A, OGG and other files are hidden.
 Seeking is not supported, and browsing a list while a track is streaming is refused because the
 device cannot hold two TLS connections at once.
 

@@ -13,6 +13,10 @@ bp_format_t bp_media_format(const char *name) {
     return BP_FMT_UNKNOWN;
 }
 
+bool bp_media_listable(bool is_dir, const char *name) {
+    return is_dir || bp_media_format(name) != BP_FMT_UNKNOWN;
+}
+
 size_t bp_id3v2_size(const uint8_t *buf, size_t len) {
     if (!buf || len < 10 || memcmp(buf, "ID3", 3) != 0) return 0;
     if (buf[3] == 0xff || buf[4] == 0xff) return 0;
