@@ -2,7 +2,7 @@
   <strong>简体中文</strong> · <a href="baidupan-pocket-player.md">English</a>
 </p>
 
-# 云盘随身听
+# 百度网盘随身听
 
 在 FoloToy AI Passport 上流式播放百度网盘里的 MP3 / M4A / AAC / WAV 音频。百度网盘的接入方式
 (设备码扫码授权、令牌刷新、xpan 接口)参考了

@@ -36,7 +36,7 @@ CONFIG_LV_USE_QRCODE=y
 CONFIG_FREERTOS_HZ=1000
 
 # --- Bluetooth ---
-# 云盘随身听不使用 BLE(省约 50KB 堆,留给 TLS 与音频缓冲)。
+# 百度网盘随身听不使用 BLE(省约 50KB 堆,留给 TLS 与音频缓冲)。
 CONFIG_BT_ENABLED=n
 
 # --- 内存(无 PSRAM:下载 TLS + MP3 解码 + 环形缓冲 + 界面共用约 200 KB 内部 RAM) ---

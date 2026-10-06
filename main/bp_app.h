@@ -1,4 +1,4 @@
-// main/bp_app.h —— 云盘随身听(Baidupan Pocket Player)应用层公共定义。
+// main/bp_app.h —— 百度网盘随身听(Baidupan Pocket Player)应用层公共定义。
 //
 // 模块划分:
 //   main.c        初始化、按键分发、页面状态机、心跳
@@ -16,7 +16,7 @@
 
 #include "bp_media.h"
 
-#define BP_APP_VERSION "0.3.1"
+#define BP_APP_VERSION "0.3.2"
 #define BP_NAME_MAX 96
 #define BP_PAGE_SIZE 12       // 每次向网盘请求的条目数(受 JSON 内存预算约束)
 #define BP_PLAYLIST_MAX BP_PAGE_SIZE

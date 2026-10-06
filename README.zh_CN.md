@@ -2,7 +2,7 @@
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
-<h1 align="center">云盘随身听</h1>
+<h1 align="center">百度网盘随身听</h1>
 
 <p align="center">
   <strong>把百度网盘里的音乐，装进一枚随身工牌。</strong><br>

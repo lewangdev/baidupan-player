@@ -1,4 +1,4 @@
-// main/bp_ui.c —— 云盘随身听界面(240x320 竖屏,圆角屏)。
+// main/bp_ui.c —— 百度网盘随身听界面(240x320 竖屏,圆角屏)。
 //
 // 所有页面在 bp_ui_init 一次建好,切页只切换 HIDDEN,不反复创建/删除对象,
 // 避免堆碎片。状态栏与提示条放在 lv_layer_top(),各页共用。
@@ -165,7 +165,7 @@ static void build_top_layer(void) {
 
 static void build_home(void) {
     lv_obj_t *p = s_pages[BP_PAGE_HOME] = page();
-    page_title(p, "云盘随身听");
+    page_title(p, "百度网盘随身听");
 
     lv_obj_t *card = box(p, 20, 74, 200, 82, COL_SURFACE, 16);
     s_home_card_icon = label(card, &lv_font_montserrat_20, COL_ACCENT, LV_SYMBOL_AUDIO);
@@ -364,7 +364,7 @@ static void build_info_pages(void) {
     }
     lv_obj_t *formats = label(p, &bp_font_16, COL_MUTED, "支持 MP3 · M4A · AAC · WAV");
     lv_obj_align(formats, LV_ALIGN_TOP_MID, 0, 248);
-    lv_obj_t *ver = label(p, &bp_font_16, COL_MUTED, "云盘随身听 v" BP_APP_VERSION);
+    lv_obj_t *ver = label(p, &bp_font_16, COL_MUTED, "百度网盘随身听 v" BP_APP_VERSION);
     lv_obj_align(ver, LV_ALIGN_TOP_MID, 0, 270);
 }
 
