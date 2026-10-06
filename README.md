@@ -14,7 +14,7 @@
 ## Features
 
 - **Stream straight from Baidu Netdisk** — no local storage, no phone app. Browse folders or list
-  every MP3/WAV in your Netdisk by modification time.
+  every MP3/WAV in your Netdisk in name order.
 - **Scan to sign in** — the screen shows a QR code; confirm on your phone with your Baidu account.
   The grant is stored on the device and refreshed automatically.
 - **Web Wi-Fi setup** — on first boot the device opens the `BaiduPlayer-XXXX` hotspot. Scan the QR
@@ -66,8 +66,8 @@
 
 Stereo is downmixed for the single speaker. Browsing shows only folders and playable files; FLAC,
 AAC/M4A, OGG and other files are hidden.
-Seeking is not supported, and browsing a list while a track is streaming is refused because the
-device cannot hold two TLS connections at once.
+Seeking is not supported. Browsing while a track plays pauses it automatically and releases the
+download connection (the device cannot hold two TLS connections); press OK on the player to resume.
 
 ## How it works
 

@@ -47,6 +47,8 @@ typedef enum {
     CMD_PREV,
     CMD_STOP,
     CMD_REPLAY,
+    CMD_SUSPEND,
+    CMD_RESUME,
     CMD_TRACK_END,
     CMD_TRACK_FAIL,
 } cmd_type_t;
@@ -61,7 +63,19 @@ typedef struct {
     char *url;
     uint64_t size;
     uint32_t gen;
+    uint64_t start;    // 从文件的这个偏移开始下载(续播时非 0)
+    bool resume;       // 续播:跳过文件头探测,沿用挂起时的格式与进度
 } track_t;
+
+// 挂起点:decode 任务退出时记录;浏览网盘时整条流水线拆除以腾出连续内存,
+// 回到播放页按 OK 后从这里用 Range 续播。
+typedef struct {
+    uint64_t offset;   // 下一个未解码字节在文件中的偏移
+    uint32_t pos_ms;
+    uint32_t total_ms;
+    bool is_wav;
+    bp_wav_info_t wav;
+} resume_t;
 
 static QueueHandle_t s_cmd;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -86,6 +100,12 @@ static volatile bool s_pipeline_running;
 static volatile bool s_fetch_running;
 static volatile bool s_fetch_eof;
 static volatile bool s_fetch_failed;
+static volatile bool s_fetch_parked;    // 暂停时已关闭下载连接,等待继续
+static volatile bool s_suspended;       // 流水线已拆除,等待续播
+static resume_t s_resume;
+static uint32_t s_base_ms;              // 本条流水线起播时的进度(续播时非 0)
+static bool s_cur_is_wav;
+static bp_wav_info_t s_cur_wav;
 static uint32_t s_gen;
 static StreamBufferHandle_t s_stream;
 static const size_t s_stream_size = STREAM_SIZE;
@@ -129,15 +149,19 @@ static esp_err_t fetch_event(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
-static bool stream_send_all(const uint8_t *data, size_t len) {
+// 返回实际写入的字节数。中止,或暂停且缓冲已满时提前返回;未写入的部分由
+// 调用方丢弃(不计入下载偏移),继续时按 Range 重新下载。
+static size_t stream_send(const uint8_t *data, size_t len) {
     size_t off = 0;
     while (off < len && !s_abort) {
-        off += xStreamBufferSend(s_stream, data + off, len - off, pdMS_TO_TICKS(100));
+        size_t got = xStreamBufferSend(s_stream, data + off, len - off, pdMS_TO_TICKS(100));
+        off += got;
+        if (!got && s_paused) break;
     }
-    return off == len;
+    return off;
 }
 
-// 返回 1=完整下载结束,0=被中止,-1=可重试错误,-2=不可重试(4xx 等)。
+// 返回 1=完整下载结束,0=被中止,2=因暂停主动断开,-1=可重试错误,-2=不可重试(4xx 等)。
 static int fetch_once(const char *start_url, uint64_t *offset, uint8_t *buf) {
     char *url = strdup(start_url);
     int result = -1;
@@ -191,11 +215,15 @@ static int fetch_once(const char *start_url, uint64_t *offset, uint8_t *buf) {
                     skip -= drop;
                     start = drop;
                 }
-                if (start < (size_t)n && !stream_send_all(buf + start, n - start)) break;
-                *offset += n - start;
+                size_t want = (size_t)n - start;
+                size_t sent = want ? stream_send(buf + start, want) : 0;
+                *offset += sent;
+                // 暂停时立刻释放连接(TLS 约 30 KB),让浏览网盘等请求有内存可用。
+                if (sent < want || s_paused) break;
             }
             if (s_abort) result = 0;
             else if (esp_http_client_is_complete_data_received(c)) result = 1;
+            else if (s_paused) result = 2;
             else result = -1;
         } else if (err == ESP_OK && status == 416) {
             result = 1;   // 续传偏移已到文件尾
@@ -216,11 +244,19 @@ static int fetch_once(const char *start_url, uint64_t *offset, uint8_t *buf) {
 static void fetch_task(void *arg) {
     track_t *t = arg;
     uint8_t *buf = malloc(FETCH_CHUNK);
-    uint64_t offset = 0;
+    uint64_t offset = t->start;
     int failures = 0, rc = -1;
     while (buf && !s_abort) {
         uint64_t before = offset;
         rc = fetch_once(t->url, &offset, buf);
+        if (rc == 2) {
+            ESP_LOGI(TAG, "paused: download connection released at %" PRIu64, offset);
+            s_fetch_parked = true;
+            log_heap("parked");
+            while (s_paused && !s_abort) vTaskDelay(pdMS_TO_TICKS(100));
+            s_fetch_parked = false;
+            continue;   // 继续播放:按 Range 从断点重连
+        }
         if (rc >= 0 || rc == -2) break;
         if (offset > before) failures = 0;   // 有进展就重新计数(如暂停后被服务器断开)
         if (++failures >= FETCH_MAX_FAILURES) break;
@@ -239,6 +275,7 @@ typedef struct {
     uint8_t *in;
     size_t len;      // in 中有效字节(从 in[0] 开始)
     size_t pos;      // 已消费字节
+    uint64_t received;   // 累计从流中读入的字节(用于计算挂起点)
 } inbuf_t;
 
 static void update_buffer_pct(void) {
@@ -251,12 +288,9 @@ static void update_buffer_pct(void) {
 // 等待缓冲到目标比例(或下载结束);期间状态为“缓冲中”。返回 false 表示中止。
 static bool wait_buffered(int pct) {
     size_t want = s_stream_size * pct / 100;
-    bool announced = false;
     while (!s_abort && !s_fetch_eof && xStreamBufferBytesAvailable(s_stream) < want) {
-        if (!announced && !s_paused) {
-            set_state(BP_PLAY_BUFFERING, NULL);
-            announced = true;
-        }
+        bp_play_state_t st = s_paused ? BP_PLAY_PAUSED : BP_PLAY_BUFFERING;
+        if (s_info.state != st) set_state(st, NULL);
         update_buffer_pct();
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -281,6 +315,7 @@ static size_t refill(inbuf_t *b) {
                                           pdMS_TO_TICKS(20));
         b->len += got;
         added += got;
+        b->received += got;
         if (got) continue;
         if (stream_done() || b->len >= IN_BUF_SIZE / 2) break;
         // 欠载:重新缓冲 25% 再继续,避免断断续续。
@@ -326,7 +361,7 @@ static bool open_codec(uint32_t rate) {
 static void publish_progress(uint64_t frames, uint32_t rate, uint32_t total_ms) {
     portENTER_CRITICAL(&s_mux);
     if (s_info.state == BP_PLAY_BUFFERING) s_info.state = BP_PLAY_PLAYING;
-    s_info.pos_ms = bp_pcm_ms(frames, rate);
+    s_info.pos_ms = s_base_ms + bp_pcm_ms(frames, rate);
     if (total_ms) s_info.total_ms = total_ms;
     portEXIT_CRITICAL(&s_mux);
 }
@@ -413,14 +448,22 @@ out:
     return error;
 }
 
-static const char *play_wav(inbuf_t *b, uint64_t file_size) {
+// known 非空表示续播:流从 start(已按采样帧对齐)开始,没有文件头。
+static const char *play_wav(inbuf_t *b, uint64_t file_size, const bp_wav_info_t *known,
+                            uint64_t start) {
     bp_wav_info_t wav;
-    int rc;
-    while ((rc = bp_wav_parse(b->in, b->len, &wav)) == 1) {
-        if (b->len >= IN_BUF_SIZE) return "WAV 头过大";
-        if (!refill(b) && stream_done()) return "WAV 文件不完整";
+    if (known) {
+        wav = *known;
+    } else {
+        int rc;
+        while ((rc = bp_wav_parse(b->in, b->len, &wav)) == 1) {
+            if (b->len >= IN_BUF_SIZE) return "WAV 头过大";
+            if (!refill(b) && stream_done()) return "WAV 文件不完整";
+        }
+        if (rc != 0) return rc == -2 ? "仅支持 16 位 PCM WAV" : "不是有效的 WAV";
     }
-    if (rc != 0) return rc == -2 ? "仅支持 16 位 PCM WAV" : "不是有效的 WAV";
+    s_cur_wav = wav;
+    s_cur_is_wav = true;
     if (!open_codec(wav.rate)) return "音频设备异常";
     uint32_t align = (uint32_t)wav.channels * 2;
     // 流式录制的 WAV 常把 data 长度写成 0 或 0xFFFFFFFF,以文件大小为准。
@@ -436,8 +479,12 @@ static const char *play_wav(inbuf_t *b, uint64_t file_size) {
     s_info.total_ms = total_ms;
     portEXIT_CRITICAL(&s_mux);
     set_state(BP_PLAY_PLAYING, NULL);
-    b->pos = wav.data_offset;
     uint64_t played = 0, frames_out = 0;
+    if (known) {
+        played = start > wav.data_offset ? start - wav.data_offset : 0;
+    } else {
+        b->pos = wav.data_offset;
+    }
     while (!s_abort && played < data_bytes) {
         wait_while_paused();
         size_t have = b->len - b->pos;
@@ -465,7 +512,9 @@ static void decode_task(void *arg) {
     track_t *t = arg;
     const char *error = NULL;
     inbuf_t b = {.in = s_in_storage};   // 4 字节对齐(WAV 按 int16 读)
-    s_fetch_eof = s_fetch_failed = false;
+    s_fetch_eof = s_fetch_failed = s_fetch_parked = false;
+    s_cur_is_wav = false;
+    s_base_ms = t->resume ? s_resume.pos_ms : 0;
     s_fetch_running = true;
     if (xTaskCreate(fetch_task, "bp_fetch", FETCH_STACK, t, 5, NULL) != pdPASS) {
         s_fetch_running = false;
@@ -478,8 +527,11 @@ static void decode_task(void *arg) {
         error = s_fetch_failed ? "网络错误" : "文件为空";
         goto done;
     }
-    if (!memcmp(b.in, "RIFF", 4)) {
-        error = play_wav(&b, t->size);
+    if (t->resume) {
+        error = s_resume.is_wav ? play_wav(&b, t->size, &s_resume.wav, t->start)
+                                : play_mp3(&b, t->size, 0);   // 解码器自行重新同步帧头
+    } else if (!memcmp(b.in, "RIFF", 4)) {
+        error = play_wav(&b, t->size, NULL, 0);
     } else {
         size_t id3 = bp_id3v2_size(b.in, b.len);
         if (id3 && !discard(&b, id3)) goto done;
@@ -490,6 +542,14 @@ done:
     s_abort = true;   // 通知 fetch 退出(若尚在运行)
     while (s_fetch_running) vTaskDelay(pdMS_TO_TICKS(20));
     log_heap("pipeline-end");
+    // 记录挂起点:下一个未解码字节 = 起始偏移 + 已读入 - 输入缓冲中未消费的部分。
+    portENTER_CRITICAL(&s_mux);
+    s_resume.offset = t->start + b.received - (b.len - b.pos);
+    s_resume.pos_ms = s_info.pos_ms;
+    s_resume.total_ms = s_info.total_ms;
+    s_resume.is_wav = s_cur_is_wav;
+    s_resume.wav = s_cur_wav;
+    portEXIT_CRITICAL(&s_mux);
     uint32_t gen = t->gen;
     bool aborted_by_user;
     portENTER_CRITICAL(&s_mux);
@@ -512,22 +572,37 @@ static void stop_pipeline(void) {
     while (s_pipeline_running) vTaskDelay(pdMS_TO_TICKS(20));
 }
 
-static void start_track(int index) {
+static void start_track_at(int index, bool resume) {
     stop_pipeline();
+    s_suspended = false;
     if (index < 0 || index >= s_pl_count) {
         set_state(BP_PLAY_IDLE, NULL);
         return;
+    }
+    // 还没播出声音就挂起的,从头重播即可(也避开落在 ID3 标签里的偏移)。
+    if (resume && s_resume.pos_ms == 0) resume = false;
+    uint64_t start = 0;
+    if (resume) {
+        start = s_resume.offset;
+        if (s_resume.is_wav) {   // 对齐到采样帧边界
+            uint32_t align = (uint32_t)s_resume.wav.channels * 2;
+            uint64_t off = s_resume.wav.data_offset;
+            start = start > off ? off + (start - off) / align * align : off;
+        }
     }
     const bp_file_t *f = &s_playlist[index];
     uint32_t gen;
     portENTER_CRITICAL(&s_mux);
     gen = ++s_gen;
     s_pl_index = index;
-    memset(&s_info, 0, sizeof(s_info));
-    strlcpy(s_info.name, f->name, sizeof(s_info.name));
-    s_info.index = index;
-    s_info.count = s_pl_count;
+    if (!resume) {
+        memset(&s_info, 0, sizeof(s_info));
+        strlcpy(s_info.name, f->name, sizeof(s_info.name));
+        s_info.index = index;
+        s_info.count = s_pl_count;
+    }
     s_info.state = BP_PLAY_RESOLVING;
+    s_info.error = NULL;
     portEXIT_CRITICAL(&s_mux);
     s_paused = false;
 
@@ -549,12 +624,16 @@ static void start_track(int index) {
     t->url = url;
     t->size = f->size;
     t->gen = gen;
+    t->start = start;
+    t->resume = resume;
     s_abort = false;
     s_pipeline_running = true;
     ESP_LOGI(TAG, "play #%d gen=%lu stream=%uKB free=%u largest=%u", index,
              (unsigned long)gen, (unsigned)(s_stream_size / 1024),
              (unsigned)esp_get_free_heap_size(),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    if (resume) ESP_LOGI(TAG, "resume at byte %" PRIu64 " (%lu ms)", start,
+                         (unsigned long)s_resume.pos_ms);
     esp_wifi_set_ps(WIFI_PS_NONE);
     set_state(BP_PLAY_BUFFERING, NULL);
     if (xTaskCreate(decode_task, "bp_decode", DECODE_STACK, t, 6, NULL) != pdPASS) {
@@ -565,6 +644,8 @@ static void start_track(int index) {
         post(CMD_TRACK_FAIL, gen, NULL);
     }
 }
+
+static void start_track(int index) { start_track_at(index, false); }
 
 // 列表播完:有下一页就加载并继续,否则停止。返回 true 表示已开始新曲目。
 static bool continue_next_page(void) {
@@ -646,7 +727,21 @@ static void ctrl_task(void *arg) {
             }
             case CMD_STOP:
                 stop_pipeline();
+                s_suspended = false;
                 finish_idle();
+                break;
+            case CMD_SUSPEND:
+                if (s_pipeline_running && !s_suspended) {
+                    s_paused = true;
+                    stop_pipeline();   // decode 任务退出时记录挂起点
+                    s_suspended = true;
+                    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+                    set_state(BP_PLAY_PAUSED, NULL);
+                    log_heap("suspended");
+                }
+                break;
+            case CMD_RESUME:
+                if (s_suspended) start_track_at(s_pl_index, true);
                 break;
             case CMD_REPLAY:
                 consecutive_failures = 0;
@@ -700,11 +795,31 @@ int bp_player_play_list(const bp_list_t *list, int index) {
 }
 
 void bp_player_toggle_pause(void) {
+    if (s_suspended) {
+        post(CMD_RESUME, 0, NULL);
+        return;
+    }
     bp_play_state_t st = s_info.state;
     if (st == BP_PLAY_PLAYING || st == BP_PLAY_BUFFERING || st == BP_PLAY_PAUSED)
         s_paused = !s_paused;
     else if ((st == BP_PLAY_IDLE || st == BP_PLAY_ERROR) && s_pl_count > 0)
         post(CMD_REPLAY, 0, NULL);
+}
+
+bool bp_player_suspend(void) {
+    bp_play_state_t st = s_info.state;
+    if (s_suspended || !s_pipeline_running ||
+        (st != BP_PLAY_PLAYING && st != BP_PLAY_BUFFERING && st != BP_PLAY_PAUSED))
+        return false;
+    bool was_playing = !s_paused;
+    s_paused = true;   // 立即静音,拆除由 ctrl 任务完成
+    post(CMD_SUSPEND, 0, NULL);
+    return was_playing;
+}
+
+void bp_player_wait_released(int timeout_ms) {
+    for (int waited = 0; waited < timeout_ms && s_pipeline_running; waited += 50)
+        vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 void bp_player_next(void) { post(CMD_NEXT, 0, NULL); }

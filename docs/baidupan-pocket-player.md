@@ -26,7 +26,8 @@ integration (device-code QR authorization, token refresh, xpan APIs) follows
 2. Authorization: choose "All audio" or "Browse" (the first two home-page items). Scan the QR
    code with a phone, sign in to Baidu, and confirm. The grant is stored on the device; sign out under
    Settings → Netdisk account.
-3. Playback: "All audio" lists every MP3/WAV by modification time; "Browse" walks folders. Press OK on a
+3. Playback: "All audio" lists every MP3/WAV in name order; "Browse" walks folders, also sorted by name.
+   Browsing while a track plays pauses it and releases the download connection; press OK on the player to resume. Press OK on a
    track to play. The next track starts automatically, and the next page loads at the end of a page.
 
 ## Buttons

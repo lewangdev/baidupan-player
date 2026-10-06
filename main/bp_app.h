@@ -16,7 +16,7 @@
 
 #include "bp_media.h"
 
-#define BP_APP_VERSION "0.1.0"
+#define BP_APP_VERSION "0.2.0"
 #define BP_NAME_MAX 96
 #define BP_PAGE_SIZE 12       // 每次向网盘请求的条目数(受 JSON 内存预算约束)
 #define BP_PLAYLIST_MAX BP_PAGE_SIZE
@@ -146,6 +146,11 @@ void bp_player_init(void);
 // 以列表快照为播放列表,从 index 开始播放(只取可播放文件)。0=已派发。
 int  bp_player_play_list(const bp_list_t *list, int index);
 void bp_player_toggle_pause(void);   // 已停止或出错时重播当前曲目
+// 浏览网盘前挂起播放:立即静音并拆除整条流水线(下载连接、解码器、任务栈)以腾出
+// 连续内存;bp_player_toggle_pause() 从挂起点续播。返回此前是否正在出声。
+bool bp_player_suspend(void);
+// 等待挂起完成、流水线内存释放(工作任务中调用),最多 timeout_ms。
+void bp_player_wait_released(int timeout_ms);
 void bp_player_next(void);
 void bp_player_prev(void);
 void bp_player_stop(void);

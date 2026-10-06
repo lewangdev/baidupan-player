@@ -101,6 +101,8 @@ static bool require_auth(void) {
 static uint32_t s_page_start[BP_PAGE_HISTORY];
 
 static void open_list_at(bp_source_t source, const char *dir, int page, uint32_t start) {
+    // 浏览网盘时先自动暂停播放(挂起并释放播放占用的内存),在播放页按 OK 继续。
+    if (bp_player_suspend()) bp_ui_toast("已暂停播放");
     bp_list_req_t req = {.source = source, .page = page, .start = start};
     strlcpy(req.dir, dir ? dir : "/", sizeof(req.dir));
     if (page >= 0 && page < BP_PAGE_HISTORY) s_page_start[page] = start;

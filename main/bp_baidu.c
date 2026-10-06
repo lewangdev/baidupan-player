@@ -426,14 +426,14 @@ static int fetch_chunk(const bp_list_req_t *req, uint32_t cursor, bp_list_t *out
             snprintf(url, 1280,
                      "https://pan.baidu.com/rest/2.0/xpan/multimedia?method=categorylist"
                      "&access_token=%s&category=2&parent_path=%%2F&recursion=1"
-                     "&ext=mp3%%2Cwav&order=time&desc=1&start=%lu&limit=%d",
+                     "&ext=mp3%%2Cwav&order=name&desc=0&start=%lu&limit=%d",
                      access, (unsigned long)cursor, BP_PAGE_SIZE);
         } else {
             char dir_enc[3 * BP_PATH_MAX];
             url_encode(req->dir, dir_enc, sizeof(dir_enc));
             snprintf(url, 1280,
                      "https://pan.baidu.com/rest/2.0/xpan/file?method=list"
-                     "&access_token=%s&dir=%s&order=name&start=%lu&limit=%d",
+                     "&access_token=%s&dir=%s&order=name&desc=0&start=%lu&limit=%d",
                      access, dir_enc, (unsigned long)cursor, BP_PAGE_SIZE);
         }
         int rc = http_get(url, resp, BD_LIST_RESP_MAX, 15000);
@@ -519,6 +519,8 @@ static void list_task(void *arg) {
     portENTER_CRITICAL(&s_list_mux);
     req = s_list_pending_req;
     portEXIT_CRITICAL(&s_list_mux);
+    // 浏览前已自动挂起播放;等流水线拆除,把内存让给这次列表请求。
+    if (bp_player_active()) bp_player_wait_released(3000);
     int rc = result ? bp_baidu_list_fetch(&req, result) : -4;
     portENTER_CRITICAL(&s_list_mux);
     if (result) {
@@ -529,6 +531,10 @@ static void list_task(void *arg) {
     s_list_running = false;
     portEXIT_CRITICAL(&s_list_mux);
     free(result);
+    if (rc != 0)
+        ESP_LOGW(TAG, "list failed rc=%d free=%u largest=%u", rc,
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     if (rc == -5) bp_ui_toast("播放中内存不足，暂不能读取列表");
     else if (rc == -2) bp_ui_toast("目录过大，无法读取");
     else if (rc != 0) bp_ui_toast("读取网盘失败");
@@ -550,7 +556,16 @@ int bp_baidu_list_request(const bp_list_req_t *req) {
     s_list.count = 0;
     s_list.has_more = false;
     portEXIT_CRITICAL(&s_list_mux);
-    if (xTaskCreate(list_task, "bp_bd_list", BD_LIST_STACK, NULL, 4, NULL) != pdPASS) {
+    BaseType_t created = xTaskCreate(list_task, "bp_bd_list", BD_LIST_STACK, NULL, 4, NULL);
+    if (created != pdPASS && bp_player_active()) {
+        // 刚自动挂起时流水线还没拆除,任务栈分配不到;等释放后再试一次。
+        bp_player_wait_released(3000);
+        created = xTaskCreate(list_task, "bp_bd_list", BD_LIST_STACK, NULL, 4, NULL);
+    }
+    if (created != pdPASS) {
+        ESP_LOGW(TAG, "list task create failed free=%u largest=%u",
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         portENTER_CRITICAL(&s_list_mux);
         s_list_running = false;
         s_list.status = -1;
