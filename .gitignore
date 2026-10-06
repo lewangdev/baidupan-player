@@ -11,3 +11,6 @@ managed_components/
 /.agents/skills/passport-build
 /.agents/skills/passport-device-test
 /.agents/skills/passport-debug
+
+# Local Baidu Netdisk app credentials (see main/bp_baidu_keys.example.h).
+/main/bp_baidu_keys.h

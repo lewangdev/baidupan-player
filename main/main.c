@@ -1,242 +1,382 @@
-// main/main.c —— FoloToy AI Passport BSP 驱动参考示例:初始化 + 菜单 + 按键分发。
+// main/main.c —— 云盘随身听入口:初始化、按键分发、页面状态机、空闲熄屏、心跳。
 //
-// 按键语义(全局统一):
-//   上/下 短按   菜单中=移动选中项;演示页中=该页自定义
-//   确定  短按   菜单中=进入选中项;演示页中=该页自定义
-//   确定  长按   演示页中=返回菜单(由本文件统一拦截)
-#include "bsp_i2c.h"
-#include "bsp_display.h"
-#include "bsp_button.h"
-#include "bsp_audio.h"
+// 按键(三键:上 / OK / 下):
+//   首页      上/下=选择  OK=进入  长按OK=回到播放页  长按下=熄屏
+//   列表      上/下=选择(长按 ±5)  OK=打开文件夹/播放/翻页  长按OK=上一级/首页
+//   播放页    OK=暂停/继续  上/下=音量  长按上/下=上一首/下一首  长按OK=返回
+//   设置/信息 上/下=选择  OK=进入/执行  长按OK=返回
+//   无线网络  OK=开启配网热点(手机连热点后网页配网)  长按OK=返回
+//   配网热点  长按OK=关闭热点并返回(网页配网完成后自动关闭)
+//   熄屏时任意键唤醒(该次按键不触发操作)
+#include "bp_app.h"
+
 #include "bsp_battery.h"
-#include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
-#include "demo.h"
-#include "demo_navigation.h"
-#include "ui_pixel.h"
-#include "lvgl.h"
+#include "bsp_button.h"
+#include "bsp_display.h"
+#include "bsp_i2c.h"
+#include "bsp_pins.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_sleep.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "nvs_flash.h"
+
+#include <string.h>
 
 static const char *TAG = "main";
 
-static const demo_entry_t DEMOS[] = {
-    { .name = "Display", .enter = demo_display_enter, .exit = demo_display_exit,
-      .key = demo_display_key },
-    { .name = "Button", .enter = demo_button_enter, .exit = demo_button_exit,
-      .key = demo_button_key },
-    { .name = "Audio", .enter = demo_audio_enter, .exit = demo_audio_exit,
-      .key = demo_audio_key, .start = demo_audio_start, .stop = demo_audio_stop },
-    { .name = "Battery", .enter = demo_battery_enter, .exit = demo_battery_exit,
-      .key = demo_battery_key },
-    { .name = "Wi-Fi", .enter = demo_wifi_enter, .exit = demo_wifi_exit,
-      .key = demo_wifi_key, .start = demo_wifi_start, .stop = demo_wifi_stop },
-    { .name = "BLE", .enter = demo_ble_enter, .exit = demo_ble_exit,
-      .key = demo_ble_key, .start = demo_ble_start, .stop = demo_ble_stop },
-    { .name = "Low Power", .enter = demo_low_power_enter, .exit = demo_low_power_exit,
-      .key = demo_low_power_key, .start = demo_low_power_start, .stop = demo_low_power_stop },
-};
-#define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
-#define INPUT_QUEUE_DEPTH 8
+#define IDLE_TIMEOUT_MS 30000
+
+bp_state_t g_bp;
 
 typedef struct {
     bsp_btn_t btn;
     bsp_btn_ev_t event;
 } input_event_t;
 
-// 各外设初始化结果:失败的项在菜单里标 [FAIL] 且不允许进入。
-static bool s_ok[DEMO_COUNT];
-
-static lv_obj_t *s_menu_scr;
-static lv_obj_t *s_cards[DEMO_COUNT];
-static lv_obj_t *s_rows[DEMO_COUNT];
-static lv_obj_t *s_mascot;
-static demo_navigation_t s_navigation;
 static QueueHandle_t s_input_queue;
-static TaskHandle_t s_input_task;
 static volatile bool s_input_ready;
+static uint32_t s_last_activity_ms;
+static int s_wake_button = -1;
+static bp_page_t s_player_back = BP_PAGE_HOME;
+static bool s_logout_armed;
 
-static void menu_refresh(void) {
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        lv_label_set_text_fmt(s_rows[i], "%s%s",
-                              DEMOS[i].name,
-                              s_ok[i] ? "" : "  [FAIL]");
-        ui_pixel_set_selected(s_cards[i], i == s_navigation.selected, s_ok[i]);
-        lv_obj_set_style_text_color(s_rows[i],
-            s_ok[i] ? lv_color_hex(UI_INK) : lv_color_hex(0x7A2020), 0);
+static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+static void screen_off(bool off) {
+    if (g_bp.screen_off == off) return;
+    g_bp.screen_off = off;
+    bsp_display_backlight(off ? 0 : 100);
+}
+
+static void on_wifi_event(int evt, const char *data) {
+    if (evt == 2) {
+        ESP_LOGI(TAG, "Wi-Fi connected: %s", data);
+        g_bp.wifi_up = true;
+        bp_baidu_on_wifi(true);
+    } else if (evt == 3) {
+        g_bp.wifi_up = false;
+        bp_baidu_on_wifi(false);
     }
 }
 
-static void menu_build(void) {
-    s_menu_scr = ui_pixel_screen_create("FoloToy");
-
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        int x = 11 + (int)(i % 2) * 112;
-        int y = 52 + (int)(i / 2) * 47;
-        s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 102, 40, UI_PAPER);
-        s_rows[i] = lv_label_create(s_cards[i]);
-        lv_obj_set_style_text_font(s_rows[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_align(s_rows[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(s_rows[i]);
-    }
-
-    s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
-
-    menu_refresh();
-    lv_screen_load(s_menu_scr);
-}
-
-static void enter_menu(void) {
-    menu_build();
-}
-
-static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
-    if (event == BSP_BTN_LONG && btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_LONG;
-    if (event != BSP_BTN_CLICK) return DEMO_NAV_INPUT_OTHER;
-    if (btn == BSP_BTN_UP) return DEMO_NAV_INPUT_UP_CLICK;
-    if (btn == BSP_BTN_DOWN) return DEMO_NAV_INPUT_DOWN_CLICK;
-    if (btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_CLICK;
-    return DEMO_NAV_INPUT_OTHER;
-}
-
-static void process_input(const input_event_t *input) {
-    demo_nav_input_t nav_input = navigation_input(input->btn, input->event);
-
-    if (s_navigation.active >= 0) {
-        demo_nav_result_t result = demo_navigation_handle(&s_navigation, nav_input, true);
-        const demo_entry_t *demo = &DEMOS[result.index];
-        if (result.action == DEMO_NAV_ACTION_EXIT) {
-            esp_err_t e = demo->stop ? demo->stop() : ESP_OK;
-            if (e != ESP_OK) {
-                ESP_LOGE(TAG, "%s 页面停止失败: %s", demo->name, esp_err_to_name(e));
-                return;
-            }
-            if (!bsp_lvgl_lock(500)) return;
-            demo->exit();
-            demo_navigation_complete_exit(&s_navigation);
-            enter_menu();
-            bsp_lvgl_unlock();
-        } else if (result.action == DEMO_NAV_ACTION_FORWARD) {
-            demo->key(input->btn, input->event);
-        }
-        return;
-    }
-
-    if (nav_input == DEMO_NAV_INPUT_OTHER || nav_input == DEMO_NAV_INPUT_OK_LONG) return;
-    if (!bsp_lvgl_lock(500)) return;
-    demo_nav_result_t result = demo_navigation_handle(
-        &s_navigation, nav_input, s_ok[s_navigation.selected]);
-    if (result.action == DEMO_NAV_ACTION_REFRESH) {
-        menu_refresh();
-        ui_pixel_mascot_jump(s_mascot);
-    } else if (result.action == DEMO_NAV_ACTION_ENTER) {
-        const demo_entry_t *demo = &DEMOS[result.index];
-        ui_pixel_mascot_jump(s_mascot);
-        lv_obj_delete(s_menu_scr);
-        s_menu_scr = NULL;
-        s_mascot = NULL;
-        demo->enter();
+// ---- 页面动作(输入任务内调用,LVGL 操作都加锁) --------------------------------
+static void go(bp_page_t page) {
+    if (bsp_lvgl_lock(500)) {
+        bp_ui_goto(page);
         bsp_lvgl_unlock();
+    }
+}
 
-        esp_err_t e = demo->start ? demo->start() : ESP_OK;
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "%s 页面启动失败: %s", demo->name, esp_err_to_name(e));
-        }
+static void ui_move(int delta) {
+    if (bsp_lvgl_lock(500)) {
+        bp_ui_move(delta);
+        bsp_lvgl_unlock();
+    }
+}
+
+static void start_web_config(void) {
+    bp_player_stop();   // 热点 + HTTP 服务需要内存,且 radio 切到 AP+STA
+    if (bp_wifi_config_start() == 0) go(BP_PAGE_WIFI_AP);
+    else bp_ui_toast("无法开启热点");
+}
+
+static bool require_auth(void) {
+    if (bp_baidu_state() == BP_BD_READY) return true;
+    if (!g_bp.wifi_up) {
+        bp_ui_toast("请先连接 Wi-Fi");
+        go(BP_PAGE_WIFI);
+        return false;
+    }
+    bp_baidu_auth_start();
+    go(BP_PAGE_AUTH);
+    return false;
+}
+
+static void open_list(bp_source_t source, const char *dir, int page) {
+    bp_list_req_t req = {.source = source, .page = page};
+    strlcpy(req.dir, dir ? dir : "/", sizeof(req.dir));
+    int rc = bp_baidu_list_request(&req);
+    if (rc == -3) {
+        bp_ui_toast("请稍候");
         return;
     }
-    bsp_lvgl_unlock();
+    if (rc != 0) bp_ui_toast("网盘暂不可用");
+    if (bsp_lvgl_lock(500)) {
+        bp_ui_list_reset_sel();
+        bp_ui_goto(BP_PAGE_LIST);
+        bsp_lvgl_unlock();
+    }
+}
+
+static void list_activate(void) {
+    bp_list_t *list = malloc(sizeof(bp_list_t));
+    if (!list) return;
+    bp_baidu_list_snapshot(list);
+    int fi = -1;
+    bp_row_kind_t kind = BP_ROW_NONE;
+    if (bsp_lvgl_lock(500)) {
+        kind = bp_ui_list_row(&fi);
+        bsp_lvgl_unlock();
+    }
+    switch (kind) {
+        case BP_ROW_RETRY:
+            open_list(list->req.source, list->req.dir, list->req.page);
+            break;
+        case BP_ROW_PREV:
+        case BP_ROW_NEXT:
+            open_list(list->req.source, list->req.dir, list->req.page + (kind == BP_ROW_NEXT ? 1 : -1));
+            break;
+        case BP_ROW_FILE: {
+            const bp_file_t *f = &list->files[fi];
+            if (f->is_dir) {
+                char child[BP_PATH_MAX];
+                if (bp_path_child(list->req.dir, f->name, child, sizeof(child)))
+                    open_list(BP_SRC_DIR, child, 0);
+                else
+                    bp_ui_toast("路径太长");
+            } else if (bp_media_format(f->name) == BP_FMT_UNKNOWN) {
+                bp_ui_toast("暂不支持此格式");
+            } else if (bp_player_play_list(list, fi) == 0) {
+                s_player_back = BP_PAGE_LIST;
+                go(BP_PAGE_PLAYER);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    free(list);
+}
+
+static void list_back(void) {
+    bp_list_t *list = malloc(sizeof(bp_list_t));
+    if (!list) return;
+    bp_baidu_list_snapshot(list);
+    char parent[BP_PATH_MAX];
+    if (list->req.source == BP_SRC_DIR && bp_path_parent(list->req.dir, parent, sizeof(parent)))
+        open_list(BP_SRC_DIR, parent, 0);
+    else
+        go(BP_PAGE_HOME);
+    free(list);
+}
+
+static void handle_input(const input_event_t *in) {
+    s_last_activity_ms = now_ms();
+
+    // 唤醒手势整体吞掉:物理按键会先 PRESS,再 CLICK/LONG。
+    if (s_wake_button == (int)in->btn) {
+        if (in->event != BSP_BTN_PRESS) s_wake_button = -1;
+        return;
+    }
+    if (g_bp.screen_off) {
+        screen_off(false);
+        if (in->event == BSP_BTN_PRESS) s_wake_button = (int)in->btn;
+        return;
+    }
+    if (in->event == BSP_BTN_PRESS || in->event == BSP_BTN_DOUBLE) return;
+
+    bool click = in->event == BSP_BTN_CLICK;
+    bool lng = in->event == BSP_BTN_LONG;
+    bool up = in->btn == BSP_BTN_UP, down = in->btn == BSP_BTN_DOWN, ok = in->btn == BSP_BTN_OK;
+    bp_page_t page = bp_ui_page();
+
+    switch (page) {
+        case BP_PAGE_HOME:
+            if ((up || down) && click) ui_move(up ? -1 : 1);
+            else if (down && lng) screen_off(true);
+            else if (ok && lng) {
+                bp_player_info_t pi;
+                bp_player_get_info(&pi);
+                if (pi.name[0]) {
+                    s_player_back = BP_PAGE_HOME;
+                    go(BP_PAGE_PLAYER);
+                } else {
+                    bp_ui_toast("还没有播放的歌曲");
+                }
+            } else if (ok && click) {
+                int sel = bp_ui_selected();
+                if (sel == 2) go(BP_PAGE_SETTINGS);
+                else if (require_auth()) open_list(sel == 0 ? BP_SRC_ALL_AUDIO : BP_SRC_DIR, "/", 0);
+            }
+            break;
+
+        case BP_PAGE_LIST:
+            if ((up || down) && click) ui_move(up ? -1 : 1);
+            else if ((up || down) && lng) ui_move(up ? -5 : 5);
+            else if (ok && click) list_activate();
+            else if (ok && lng) list_back();
+            break;
+
+        case BP_PAGE_PLAYER:
+            if (ok && click) bp_player_toggle_pause();
+            else if (ok && lng) go(s_player_back);
+            else if ((up || down) && click)
+                bp_player_set_volume((uint8_t)bp_volume_step(g_bp.volume, up ? 10 : -10));
+            else if (up && lng) bp_player_prev();
+            else if (down && lng) bp_player_next();
+            break;
+
+        case BP_PAGE_AUTH:
+            if (ok && lng) {
+                bp_baidu_auth_cancel();
+                go(BP_PAGE_HOME);
+            }
+            break;
+
+        case BP_PAGE_SETTINGS:
+            if ((up || down) && click) ui_move(up ? -1 : 1);
+            else if (ok && lng) go(BP_PAGE_HOME);
+            else if (ok && click) {
+                static const bp_page_t targets[] = {BP_PAGE_WIFI, BP_PAGE_ACCOUNT, BP_PAGE_ABOUT};
+                int sel = bp_ui_selected();
+                if (sel >= 0 && sel < 3) {
+                    s_logout_armed = false;
+                    go(targets[sel]);
+                }
+            }
+            break;
+
+        case BP_PAGE_ACCOUNT:
+            if (ok && lng) go(BP_PAGE_SETTINGS);
+            else if (ok && click) {
+                if (bp_baidu_state() != BP_BD_READY) {
+                    require_auth();
+                } else if (!s_logout_armed) {
+                    s_logout_armed = true;
+                    if (bsp_lvgl_lock(500)) { bp_ui_account_arm(true); bsp_lvgl_unlock(); }
+                } else {
+                    s_logout_armed = false;
+                    bp_player_stop();
+                    bp_ui_toast(bp_baidu_logout() == 0 ? "已退出网盘账号" : "退出失败");
+                    if (bsp_lvgl_lock(500)) { bp_ui_account_arm(false); bsp_lvgl_unlock(); }
+                }
+            } else if ((up || down) && click && s_logout_armed) {
+                s_logout_armed = false;
+                if (bsp_lvgl_lock(500)) { bp_ui_account_arm(false); bsp_lvgl_unlock(); }
+            }
+            break;
+
+        case BP_PAGE_WIFI:
+            if (ok && lng) go(BP_PAGE_SETTINGS);
+            else if (ok && click) start_web_config();
+            break;
+
+        case BP_PAGE_WIFI_AP:
+            if (ok && lng) {
+                bp_wifi_config_stop();
+                go(BP_PAGE_WIFI);
+            }
+            break;
+
+        case BP_PAGE_ABOUT:
+            if (ok && lng) go(BP_PAGE_SETTINGS);
+            break;
+
+        default:
+            break;
+    }
 }
 
 static void input_task(void *arg) {
     (void)arg;
-    input_event_t input;
-    for (;;) {
-        if (xQueueReceive(s_input_queue, &input, portMAX_DELAY) == pdTRUE) {
-            process_input(&input);
-        }
-    }
+    input_event_t in;
+    for (;;)
+        if (xQueueReceive(s_input_queue, &in, portMAX_DELAY) == pdTRUE) handle_input(&in);
 }
 
-static esp_err_t input_dispatch_init(void) {
-    s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
-    if (!s_input_queue) return ESP_ERR_NO_MEM;
-    if (xTaskCreate(input_task, "demo_input", 4096, NULL, 5, &s_input_task) != pdPASS) {
-        vQueueDelete(s_input_queue);
-        s_input_queue = NULL;
-        return ESP_ERR_NO_MEM;
-    }
-    return ESP_OK;
-}
-
-static void input_dispatch_deinit(void) {
-    s_input_ready = false;
-    if (s_input_task) {
-        vTaskDelete(s_input_task);
-        s_input_task = NULL;
-    }
-    if (s_input_queue) {
-        vQueueDelete(s_input_queue);
-        s_input_queue = NULL;
-    }
-}
-
-// button callbacks run on the shared esp_timer task; enqueue only and return immediately.
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     (void)user;
-    if (!s_input_ready || !s_input_queue) return;
-    const input_event_t input = { .btn = btn, .event = ev };
-    (void)xQueueSend(s_input_queue, &input, 0);
+    if (!s_input_ready) return;
+    const input_event_t in = {.btn = btn, .event = ev};
+    (void)xQueueSend(s_input_queue, &in, 0);
+}
+
+int bp_test_key(int button, bool long_press) {
+    if (!s_input_ready || button < 0 || button > 2) return -1;
+    static const bsp_btn_t buttons[] = {BSP_BTN_UP, BSP_BTN_OK, BSP_BTN_DOWN};
+    const input_event_t in = {.btn = buttons[button],
+                              .event = long_press ? BSP_BTN_LONG : BSP_BTN_CLICK};
+    return xQueueSend(s_input_queue, &in, pdMS_TO_TICKS(100)) == pdTRUE ? 0 : -1;
+}
+
+int bp_test_page(void) { return bp_ui_page(); }
+
+// ---- 定时器 -----------------------------------------------------------------------
+static void idle_timer_cb(void *arg) {
+    (void)arg;
+    // 播放中也熄屏省电,音乐继续;授权页与配网页需要扫码,保持常亮。
+    bp_page_t page = bp_ui_page();
+    if (!g_bp.screen_off && page != BP_PAGE_AUTH && page != BP_PAGE_WIFI_AP &&
+        now_ms() - s_last_activity_ms > IDLE_TIMEOUT_MS) {
+        screen_off(true);
+    }
+}
+
+static void heartbeat_cb(void *arg) {
+    (void)arg;
+    bp_player_info_t pi;
+    bp_player_get_info(&pi);
+    ESP_LOGI(TAG, "[HB] free=%u min=%u largest=%u wifi=%d bd=%d play=%d pos=%lu buf=%u%%",
+             (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), g_bp.wifi_up,
+             bp_baidu_state(), pi.state, (unsigned long)pi.pos_ms, pi.buffer_pct);
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "FoloToy AI Passport BSP demo 启动");
-    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
-    if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
-        ESP_LOGI(TAG, "休眠唤醒原因: %d", wakeup);
+    ESP_LOGI(TAG, "Baidu Netdisk Player v" BP_APP_VERSION);
+
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
     }
+    ESP_ERROR_CHECK(err);
 
     bsp_i2c_init();
-    bsp_i2c_scan();
-
-    // 屏幕是本 demo 的 UI 载体,失败就没有菜单可言 —— 打清楚日志后退出,
-    // 不做"串口菜单"降级(那会让本文件复杂一倍,违背参考示例的初衷)。
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
-        ESP_LOGE(TAG, "显示/LVGL 初始化失败,demo 无法继续。"
-                      "检查 SPI 接线(MOSI=%d SCLK=%d CS=%d DC=%d BL=%d)",
-                 BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
+        ESP_LOGE(TAG, "display/LVGL init failed");
         return;
     }
-    bsp_display_backlight(100);
-
-    demo_navigation_init(&s_navigation, DEMO_COUNT);
-
-    // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
-    s_ok[0] = true;                                   // Display 已确认可用
-    esp_err_t input_err = input_dispatch_init();
-    esp_err_t button_err = input_err == ESP_OK
-                         ? bsp_button_init(on_key, NULL)
-                         : ESP_ERR_INVALID_STATE;
-    s_ok[1] = input_err == ESP_OK && button_err == ESP_OK;
-    if (input_err != ESP_OK) {
-        ESP_LOGE(TAG, "按键事件任务创建失败: %s", esp_err_to_name(input_err));
-    } else if (button_err != ESP_OK) {
-        ESP_LOGE(TAG, "按键初始化失败: %s", esp_err_to_name(button_err));
-        input_dispatch_deinit();
-    }
-    s_ok[2] = (bsp_audio_init() == ESP_OK);
-    s_ok[3] = (bsp_battery_init() == ESP_OK);
-    s_ok[4] = true;                                    // 页面内按需初始化并显示错误
-    s_ok[5] = true;
-    s_ok[6] = true;
+    bsp_battery_init();
+    bp_baidu_init();
+    bp_player_init();
 
     if (bsp_lvgl_lock(1000)) {
-        enter_menu();
+        bp_ui_init();
         bsp_lvgl_unlock();
+    }
+    bsp_display_backlight(100);
+    s_last_activity_ms = now_ms();
+
+    s_input_queue = xQueueCreate(8, sizeof(input_event_t));
+    if (s_input_queue && xTaskCreate(input_task, "bp_input", 6144, NULL, 5, NULL) == pdPASS &&
+        bsp_button_init(on_key, NULL) == ESP_OK) {
         s_input_ready = true;
+    } else {
+        ESP_LOGE(TAG, "button init failed");
     }
 
-    ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
-             s_ok[0], s_ok[1], s_ok[2], s_ok[3]);
+    const esp_timer_create_args_t idle_args = {.callback = idle_timer_cb, .name = "bp_idle"};
+    esp_timer_handle_t idle_timer;
+    if (esp_timer_create(&idle_args, &idle_timer) == ESP_OK)
+        esp_timer_start_periodic(idle_timer, 1000 * 1000);
+    const esp_timer_create_args_t hb_args = {.callback = heartbeat_cb, .name = "bp_hb"};
+    esp_timer_handle_t hb_timer;
+    if (esp_timer_create(&hb_args, &hb_timer) == ESP_OK)
+        esp_timer_start_periodic(hb_timer, 30 * 1000 * 1000);
+
+    bp_wifi_init(on_wifi_event);
+    if (bp_wifi_saved_count() == 0) {
+        // 首次使用:直接开启配网热点,手机扫屏幕二维码即可配网。
+        ESP_LOGI(TAG, "no saved Wi-Fi; starting web provisioning hotspot");
+        bp_wifi_config_start();
+        go(BP_PAGE_WIFI_AP);
+    } else {
+        bp_wifi_start_station();
+    }
+    bp_console_start();
 }

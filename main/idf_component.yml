@@ -1,0 +1,5 @@
+dependencies:
+  # 根依赖清单显式钉住 lvgl,防止新增组件时被重新解析升级。
+  lvgl/lvgl: "==9.5.0"
+  # Helix 定点 MP3 解码器(无 PSRAM 也能跑,约 23 KiB 状态)。
+  chmorgan/esp-libhelix-mp3: "1.0.3"

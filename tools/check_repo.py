@@ -36,7 +36,7 @@ ROOT_MARKDOWN_ALLOWLIST = {
 }
 # Register only concrete, vendored component directories, e.g. "components/foo".
 # These exemptions never change the input to sensitive-content/conflict checks.
-VENDORED_DOC_ROOTS: tuple[str, ...] = ()
+VENDORED_DOC_ROOTS: tuple[str, ...] = ("components/esp-wifi-connect",)
 
 
 def vendored_document_roots(errors: list[str]) -> tuple[Path, ...]:
