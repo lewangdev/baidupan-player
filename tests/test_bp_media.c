@@ -35,6 +35,8 @@ static void test_format(void) {
     assert(bp_media_format("周杰伦 - 晴天.MP3") == BP_FMT_MP3);
     assert(bp_media_format("x.Wav") == BP_FMT_WAV);
     assert(bp_media_format("x.flac") == BP_FMT_UNKNOWN);
+    assert(bp_media_format("故事.M4A") == BP_FMT_M4A);
+    assert(bp_media_format("x.aac") == BP_FMT_AAC);
     assert(bp_media_format(".mp3") == BP_FMT_UNKNOWN);
     assert(bp_media_format("mp3") == BP_FMT_UNKNOWN);
     assert(bp_media_format(NULL) == BP_FMT_UNKNOWN);
@@ -44,6 +46,7 @@ static void test_format(void) {
     assert(bp_media_listable(false, "x.wav"));
     assert(!bp_media_listable(false, "封面.jpg"));
     assert(!bp_media_listable(false, "歌.flac"));
+    assert(bp_media_listable(false, "故事.m4a"));
     assert(!bp_media_listable(false, "README"));
 }
 
@@ -132,7 +135,80 @@ static void test_misc(void) {
     assert(bp_playlist_move(0, 0, 1, true) == -1);
 }
 
+// 128 kbps / 44.1 kHz / 立体声 MPEG-1 Layer III 帧头,无填充:帧长 417。
+static const uint8_t MP3_HDR[4] = {0xff, 0xfb, 0x90, 0x04};
+
+static void test_sniff_and_headers(void) {
+    uint8_t m4a[16] = {0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'M', '4', 'A', ' '};
+    assert(bp_media_sniff(m4a, sizeof(m4a)) == BP_SNIFF_MP4);
+    assert(bp_media_sniff((const uint8_t *)"ID3\x04\0\0\0\0\0\0", 10) == BP_SNIFF_MP3);
+    assert(bp_media_sniff((const uint8_t *)"RIFF....WAVE", 12) == BP_SNIFF_WAV);
+    assert(bp_media_sniff((const uint8_t *)"fLaC\0\0", 6) == BP_SNIFF_FLAC);
+    assert(bp_media_sniff((const uint8_t *)"OggS\0\0", 6) == BP_SNIFF_OGG);
+    uint8_t adts[7] = {0xff, 0xf1, 0x50, 0x80, 0x02, 0x1f, 0xfc};
+    assert(bp_media_sniff(adts, sizeof(adts)) == BP_SNIFF_AAC);
+    assert(bp_media_sniff(MP3_HDR, 4) == BP_SNIFF_MP3);
+    assert(bp_media_sniff((const uint8_t *)"\0\0\0\0", 4) == BP_SNIFF_UNKNOWN);
+
+    bp_mp3_hdr_t h;
+    assert(bp_mp3_parse_header(MP3_HDR, &h));
+    assert(h.version == 1 && h.samplerate == 44100 && h.bitrate == 128000 && h.channels == 2);
+    assert(h.frame_len == 417);
+    uint8_t v2[4] = {0xff, 0xf3, 0x80, 0xc4};   // MPEG-2, 64 kbps, 22.05 kHz, 单声道
+    assert(bp_mp3_parse_header(v2, &h) && h.version == 2 && h.samplerate == 22050 &&
+           h.bitrate == 64000 && h.channels == 1 && h.frame_len == 72 * 64000 / 22050);
+    uint8_t bad[4] = {0xff, 0xfb, 0xf0, 0x04};  // 码率索引 15
+    assert(!bp_mp3_parse_header(bad, &h));
+    uint8_t l2[4] = {0xff, 0xfd, 0x90, 0x04};   // Layer II
+    assert(!bp_mp3_parse_header(l2, &h));
+}
+
+static void test_find_frame(void) {
+    static uint8_t buf[2000];
+    memset(buf, 0x11, sizeof(buf));
+    // 伪同步:位置 10 处像帧头,但 417 字节后不是帧头(M4A 数据里的典型误判)。
+    memcpy(buf + 10, MP3_HDR, 4);
+    // 真帧:位置 500 与 917 连续两帧。
+    memcpy(buf + 500, MP3_HDR, 4);
+    memcpy(buf + 917, MP3_HDR, 4);
+    bp_mp3_hdr_t h;
+    size_t partial = 0;
+    assert(bp_mp3_find_frame(buf, sizeof(buf), false, NULL, &h, &partial) == 500);
+    // 采样率不符的候选被跳过。
+    bp_mp3_hdr_t want = {.version = 1, .samplerate = 48000};
+    assert(bp_mp3_find_frame(buf, sizeof(buf), false, &want, &h, &partial) == -1);
+    // 下一帧还没读到:需要更多数据;流已结束则接受。
+    assert(bp_mp3_find_frame(buf + 500, 300, false, NULL, &h, &partial) == -2 && partial == 0);
+    assert(bp_mp3_find_frame(buf + 500, 300, true, NULL, &h, &partial) == 0);
+    memset(buf, 0, sizeof(buf));
+    assert(bp_mp3_find_frame(buf, sizeof(buf), false, NULL, &h, &partial) == -1);
+}
+
+static void test_shorten(void) {
+    char out[32];
+    bp_name_shorten("短名.mp3", out, sizeof(out));
+    assert(!strcmp(out, "短名.mp3"));
+    // 中文 3 字节/字:截断时保留 .mp3,且不切断字符。
+    const char *longname = "【钱儿爸】一百万只猫美国史上第一本真正的绘本.mp3";
+    bp_name_shorten(longname, out, sizeof(out));
+    assert(strlen(out) < sizeof(out));
+    assert(!strcmp(out + strlen(out) - 4, ".mp3"));
+    assert(strstr(out, "\xe2\x80\xa6"));
+    for (size_t i = 0; out[i]; ) {           // 合法 UTF-8 序列
+        unsigned char c = (unsigned char)out[i];
+        size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : 4;
+        for (size_t k = 1; k < n; k++) assert(((unsigned char)out[i + k] & 0xc0) == 0x80);
+        i += n;
+    }
+    char tiny[6];
+    bp_name_shorten("abcdefghij.mp3", tiny, sizeof(tiny));
+    assert(!strcmp(tiny, "abcde"));
+}
+
 int main(void) {
+    test_sniff_and_headers();
+    test_find_frame();
+    test_shorten();
     test_format();
     test_id3();
     test_wav();

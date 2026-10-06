@@ -155,7 +155,7 @@ static void list_activate(void) {
                     open_list(BP_SRC_DIR, child);
                 else
                     bp_ui_toast("路径太长");
-            } else if (bp_media_format(f->name) == BP_FMT_UNKNOWN) {
+            } else if (f->format == BP_FMT_UNKNOWN) {
                 bp_ui_toast("暂不支持此格式");
             } else if (bp_player_play_list(list, fi) == 0) {
                 s_player_back = BP_PAGE_LIST;

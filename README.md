@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Your Baidu Netdisk music library, on a pocket badge.</strong><br>
-  Streaming MP3/WAV player firmware for the FoloToy AI Passport (ESP32-C3, no PSRAM).
+  Streaming MP3/M4A/AAC/WAV player firmware for the FoloToy AI Passport (ESP32-C3, no PSRAM).
 </p>
 
 ---
@@ -14,7 +14,7 @@
 ## Features
 
 - **Stream straight from Baidu Netdisk** — no local storage, no phone app. Browse folders or list
-  every MP3/WAV in your Netdisk in name order.
+  every MP3, M4A, AAC and WAV file in your Netdisk in name order.
 - **Scan to sign in** — the screen shows a QR code; confirm on your phone with your Baidu account.
   The grant is stored on the device and refreshed automatically.
 - **Web Wi-Fi setup** — on first boot the device opens the `BaiduPlayer-XXXX` hotspot. Scan the QR
@@ -62,10 +62,13 @@
 | Format | Details |
 | --- | --- |
 | MP3 | MPEG-1/2 Layer III, CBR and VBR, any sample rate (Helix decoder) |
+| M4A | AAC-LC in an MP4 container (Helix AAC); HE-AAC plays its AAC-LC core. The index must be at the start of the file |
+| AAC | ADTS AAC-LC |
 | WAV | 16-bit PCM, mono or stereo, 8–48 kHz |
 
 Stereo is downmixed for the single speaker. Browsing shows only folders and playable files; FLAC,
-AAC/M4A, OGG and other files are hidden.
+OGG and other files are hidden. The format is detected from the file content, so an M4A file
+named `.mp3` still plays.
 Seeking is not supported. Browsing while a track plays pauses it automatically and releases the
 download connection (the device cannot hold two TLS connections); press OK on the player to resume.
 
@@ -76,7 +79,7 @@ Baidu OAuth (device code) ─► xpan list / categorylist ─► filemetas dlink
                                                              │
 control task ─► fetch task (HTTPS, 302, Range resume) ─► 20 KB stream buffer
                                                              │
-                              decode task (Helix MP3 / WAV) ─► mono PCM ─► ES8311 / I2S
+                              decode task (Helix MP3 / AAC / WAV) ─► mono PCM ─► ES8311 / I2S
 ```
 
 | Module | Role |
@@ -85,7 +88,8 @@ control task ─► fetch task (HTTPS, 302, Range resume) ─► 20 KB stream bu
 | [`main/bp_player.c`](main/bp_player.c) | Streaming pipeline, playlist, auto-advance, per-stage heap logging |
 | [`main/bp_ui.c`](main/bp_ui.c) | LVGL pages, created once at boot and switched by visibility |
 | [`main/bp_wifi.cc`](main/bp_wifi.cc) | Station reconnect and SoftAP captive-portal provisioning |
-| [`main/bp_media.c`](main/bp_media.c) | Pure logic with host tests: formats, ID3v2, WAV headers, paths |
+| [`main/bp_media.c`](main/bp_media.c) | Pure logic with host tests: formats, content sniffing, MP3 frame checks, ID3v2, WAV headers, paths |
+| [`main/bp_mp4.c`](main/bp_mp4.c) | Streaming M4A header parser; mdat is then decoded as consecutive raw AAC blocks without a frame-size table |
 
 The ESP32-C3 has about 180 KB of heap for everything. Measured during playback: ~106 KB free
 before a track, ~52 KB after the CDN TLS connection, ~20 KB minimum while decoding, and full
@@ -99,7 +103,7 @@ serial console commands and limits.
 - Baidu Netdisk integration follows
   [netdisk-recording-badge](https://github.com/openbrt/netdisk-recording-badge).
 - [esp-wifi-connect](https://github.com/78/esp-wifi-connect) for Wi-Fi and the captive portal,
-  [libhelix-mp3](https://components.espressif.com/components/chmorgan/esp-libhelix-mp3) for MP3,
+  [libhelix-mp3](https://components.espressif.com/components/chmorgan/esp-libhelix-mp3) for MP3, the Helix AAC decoder (via [ESP8266Audio](https://github.com/earlephilhower/ESP8266Audio), RPSL) for AAC,
   and Source Han Sans SC (SIL OFL) for Chinese text.
 
 Released under the [MIT License](LICENSE).

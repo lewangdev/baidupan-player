@@ -10,11 +10,109 @@ bp_format_t bp_media_format(const char *name) {
     if (!ext || ext == name) return BP_FMT_UNKNOWN;
     if (!strcasecmp(ext, ".mp3")) return BP_FMT_MP3;
     if (!strcasecmp(ext, ".wav")) return BP_FMT_WAV;
+    if (!strcasecmp(ext, ".m4a")) return BP_FMT_M4A;
+    if (!strcasecmp(ext, ".aac")) return BP_FMT_AAC;
     return BP_FMT_UNKNOWN;
 }
 
 bool bp_media_listable(bool is_dir, const char *name) {
     return is_dir || bp_media_format(name) != BP_FMT_UNKNOWN;
+}
+
+bp_sniff_t bp_media_sniff(const uint8_t *buf, size_t len) {
+    if (!buf || len < 4) return BP_SNIFF_UNKNOWN;
+    if (!memcmp(buf, "RIFF", 4)) return BP_SNIFF_WAV;
+    if (!memcmp(buf, "ID3", 3)) return BP_SNIFF_MP3;
+    if (!memcmp(buf, "fLaC", 4)) return BP_SNIFF_FLAC;
+    if (!memcmp(buf, "OggS", 4)) return BP_SNIFF_OGG;
+    if (len >= 8 && !memcmp(buf + 4, "ftyp", 4)) return BP_SNIFF_MP4;
+    bp_mp3_hdr_t h;
+    if (bp_mp3_parse_header(buf, &h)) return BP_SNIFF_MP3;
+    // ADTS:同步字 12 位全 1,layer 字段为 0(MP3 的 layer 字段非 0)。
+    if (buf[0] == 0xff && (buf[1] & 0xf6) == 0xf0) return BP_SNIFF_AAC;
+    return BP_SNIFF_UNKNOWN;
+}
+
+bool bp_mp3_parse_header(const uint8_t *h, bp_mp3_hdr_t *out) {
+    static const uint16_t br_v1[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
+    static const uint16_t br_v2[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
+    static const uint32_t sr_v1[3] = {44100, 48000, 32000};
+    if (!h || h[0] != 0xff || (h[1] & 0xe0) != 0xe0) return false;
+    int ver_bits = (h[1] >> 3) & 3;        // 0:2.5 1:保留 2:MPEG-2 3:MPEG-1
+    int layer_bits = (h[1] >> 1) & 3;      // 1 = Layer III
+    int br_idx = h[2] >> 4, sr_idx = (h[2] >> 2) & 3, pad = (h[2] >> 1) & 1;
+    if (ver_bits == 1 || layer_bits != 1 || br_idx == 0 || br_idx == 15 || sr_idx == 3 ||
+        (h[3] & 3) == 2)
+        return false;
+    bp_mp3_hdr_t r;
+    r.version = ver_bits == 3 ? 1 : ver_bits == 2 ? 2 : 25;
+    int div = r.version == 1 ? 1 : r.version == 2 ? 2 : 4;
+    r.samplerate = sr_v1[sr_idx] / (uint32_t)div;
+    r.bitrate = (uint32_t)(r.version == 1 ? br_v1[br_idx] : br_v2[br_idx]) * 1000;
+    r.channels = (h[3] >> 6) == 3 ? 1 : 2;
+    r.frame_len = (r.version == 1 ? 144 : 72) * r.bitrate / r.samplerate + (uint32_t)pad;
+    if (out) *out = r;
+    return true;
+}
+
+static bool hdr_compatible(const bp_mp3_hdr_t *a, const bp_mp3_hdr_t *b) {
+    return a->version == b->version && a->samplerate == b->samplerate;
+}
+
+int bp_mp3_find_frame(const uint8_t *buf, size_t len, bool at_eof, const bp_mp3_hdr_t *want,
+                      bp_mp3_hdr_t *out, size_t *partial) {
+    if (!buf) return -1;
+    for (size_t i = 0; i + 4 <= len; i++) {
+        bp_mp3_hdr_t h;
+        if (!bp_mp3_parse_header(buf + i, &h)) continue;
+        if (want && !hdr_compatible(&h, want)) continue;
+        size_t next = i + h.frame_len;
+        if (next + 4 > len) {
+            if (at_eof) {
+                if (out) *out = h;
+                return (int)i;
+            }
+            if (partial) *partial = i;
+            return -2;
+        }
+        bp_mp3_hdr_t n;
+        if (!bp_mp3_parse_header(buf + next, &n) || !hdr_compatible(&h, &n)) continue;
+        if (out) *out = h;
+        return (int)i;
+    }
+    return -1;
+}
+
+static size_t utf8_floor(const char *s, size_t n) {
+    while (n > 0 && ((unsigned char)s[n] & 0xc0) == 0x80) n--;
+    return n;
+}
+
+void bp_name_shorten(const char *src, char *out, size_t cap) {
+    if (!out || !cap) return;
+    out[0] = 0;
+    if (!src) return;
+    size_t len = strlen(src);
+    if (len < cap) {
+        memcpy(out, src, len + 1);
+        return;
+    }
+    static const char ELLIPSIS[] = "\xe2\x80\xa6";   // …
+    const char *dot = strrchr(src, '.');
+    size_t ext = dot && dot != src && (size_t)(src + len - dot) <= 10 ? (size_t)(src + len - dot) : 0;
+    size_t room = cap - 1;
+    if (room < ext + 3 + 1) ext = 0;            // 太短放不下扩展名时只截断
+    size_t keep = room - ext - (ext ? 3 : 0);
+    keep = utf8_floor(src, keep);
+    memcpy(out, src, keep);
+    size_t o = keep;
+    if (ext) {
+        memcpy(out + o, ELLIPSIS, 3);
+        o += 3;
+        memcpy(out + o, src + len - ext, ext);
+        o += ext;
+    }
+    out[o] = 0;
 }
 
 size_t bp_id3v2_size(const uint8_t *buf, size_t len) {

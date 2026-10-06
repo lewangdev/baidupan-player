@@ -6,14 +6,14 @@
 
 <p align="center">
   <strong>把百度网盘里的音乐，装进一枚随身工牌。</strong><br>
-  运行在 FoloToy AI Passport(ESP32-C3,无 PSRAM)上的 MP3/WAV 流式播放固件。
+  运行在 FoloToy AI Passport(ESP32-C3,无 PSRAM)上的 MP3/M4A/AAC/WAV 流式播放固件。
 </p>
 
 ---
 
 ## 功能
 
-- **直接播放网盘音频**:不占本地存储,不需要手机 App。可按文件夹浏览,也可按名称顺序列出网盘内全部 MP3/WAV。
+- **直接播放网盘音频**:不占本地存储,不需要手机 App。可按文件夹浏览,也可按名称顺序列出网盘内全部 MP3、M4A、AAC 和 WAV。
 - **扫码登录**:屏幕显示二维码,手机登录百度账号确认即可;授权保存在设备上并自动续期。
 - **网页配网**:首次开机自动开启热点 `BaiduPlayer-XXXX`,扫屏幕二维码连上后在弹出的网页里选网络、填密码。
 - **连续播放**:自动播放下一首并加载下一页;下载中断后按 HTTP Range 断点续传;音量重启后保留。
@@ -55,9 +55,11 @@
 | 格式 | 说明 |
 | --- | --- |
 | MP3 | MPEG-1/2 Layer III,CBR 与 VBR,任意采样率(Helix 解码) |
+| M4A | MP4 容器中的 AAC-LC(Helix AAC);HE-AAC 播放其 AAC-LC 基础层。索引需在文件开头 |
+| AAC | ADTS 格式的 AAC-LC |
 | WAV | 16 位 PCM,单/双声道,8–48 kHz |
 
-板载单喇叭,双声道下混为单声道。浏览网盘时只显示文件夹和可播放的文件,FLAC、AAC/M4A、OGG 及其他文件不显示。暂不支持拖动进度;
+板载单喇叭,双声道下混为单声道。浏览网盘时只显示文件夹和可播放的文件,FLAC、OGG 及其他文件不显示。格式按文件内容识别,扩展名写成 `.mp3` 的 M4A 也能播放。暂不支持拖动进度;
 浏览网盘时如果正在播放会自动暂停(释放下载连接腾出内存),回到播放页按 OK 继续。
 
 ## 工作原理
@@ -67,7 +69,7 @@
                                                        │
 控制任务 ─► 下载任务(HTTPS、302 跳转、Range 续传) ─► 20 KB 环形缓冲
                                                        │
-                        解码任务(Helix MP3 / WAV) ─► 单声道 PCM ─► ES8311 / I2S
+                        解码任务(Helix MP3 / AAC / WAV) ─► 单声道 PCM ─► ES8311 / I2S
 ```
 
 | 模块 | 职责 |
@@ -76,7 +78,8 @@
 | [`main/bp_player.c`](main/bp_player.c) | 流式播放流水线、播放列表、自动续播、分阶段内存日志 |
 | [`main/bp_ui.c`](main/bp_ui.c) | LVGL 页面,启动时一次创建,切页只切换可见性 |
 | [`main/bp_wifi.cc`](main/bp_wifi.cc) | STA 自动回连与 SoftAP 强制门户配网 |
-| [`main/bp_media.c`](main/bp_media.c) | 带主机测试的纯逻辑:格式、ID3v2、WAV 头、路径 |
+| [`main/bp_media.c`](main/bp_media.c) | 带主机测试的纯逻辑:格式、按内容识别、MP3 帧头校验、ID3v2、WAV 头、路径 |
+| [`main/bp_mp4.c`](main/bp_mp4.c) | 流式 M4A 头部解析;之后把 mdat 当作连续的裸 AAC 块解码,无需逐帧大小表 |
 
 ESP32-C3 全部可用堆约 180 KB。实测播放时:每首开始前空闲约 106 KB,CDN 的 TLS 连接建立后约
 52 KB,解码中最低约 20 KB,每首结束后完全回收。详细说明、串口命令与限制见
@@ -87,7 +90,7 @@ ESP32-C3 全部可用堆约 180 KB。实测播放时:每首开始前空闲约 10
 - 基于 [FoloToy AI Passport](https://github.com/FoloToy/ai-passport)(板级支持、构建与校验工具),
   其模板文档保留在 [docs/README.zh_CN.md](docs/README.zh_CN.md)。
 - 百度网盘接入参考 [netdisk-recording-badge](https://github.com/openbrt/netdisk-recording-badge)。
-- Wi-Fi 与配网门户来自 [esp-wifi-connect](https://github.com/78/esp-wifi-connect),MP3 解码来自
+- Wi-Fi 与配网门户来自 [esp-wifi-connect](https://github.com/78/esp-wifi-connect),AAC 解码为 Helix AAC(取自 [ESP8266Audio](https://github.com/earlephilhower/ESP8266Audio),RPSL),MP3 解码来自
   [libhelix-mp3](https://components.espressif.com/components/chmorgan/esp-libhelix-mp3),中文字体为思源黑体(SIL OFL)。
 
 以 [MIT 许可证](LICENSE)发布。

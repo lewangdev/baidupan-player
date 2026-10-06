@@ -5,10 +5,11 @@ idf_component_register(
          "bp_keys.c"
          "bp_player.c"
          "bp_media.c"
+         "bp_mp4.c"
          "bp_console.c"
          "bp_wifi.cc"
     INCLUDE_DIRS "."
-    REQUIRES bsp nvs_flash esp_wifi esp-wifi-connect esp_http_client json mbedtls
+    REQUIRES bsp nvs_flash esp_wifi esp-wifi-connect esp_http_client json mbedtls libhelix-aac
     PRIV_REQUIRES esp_netif esp_event esp_timer esp-tls lwip lvgl
 )
 target_sources(${COMPONENT_LIB} PRIVATE

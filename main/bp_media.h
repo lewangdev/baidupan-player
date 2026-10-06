@@ -12,6 +12,8 @@ typedef enum {
     BP_FMT_UNKNOWN = 0,
     BP_FMT_MP3,
     BP_FMT_WAV,
+    BP_FMT_M4A,    // MP4 容器中的 AAC
+    BP_FMT_AAC,    // ADTS 裸流
 } bp_format_t;
 
 typedef struct {
@@ -27,6 +29,38 @@ bp_format_t bp_media_format(const char *name);
 
 // 浏览网盘时是否显示该条目:文件夹或可播放的音频。
 bool bp_media_listable(bool is_dir, const char *name);
+
+// 按文件内容识别容器/编码(网盘里常见扩展名与内容不符,如 M4A 被命名为 .mp3)。
+typedef enum {
+    BP_SNIFF_UNKNOWN = 0,
+    BP_SNIFF_MP3,        // ID3 标签或有效的 MPEG Layer III 帧头
+    BP_SNIFF_WAV,
+    BP_SNIFF_MP4,        // M4A / MP4(ftyp)
+    BP_SNIFF_AAC,        // ADTS AAC
+    BP_SNIFF_FLAC,
+    BP_SNIFF_OGG,
+} bp_sniff_t;
+bp_sniff_t bp_media_sniff(const uint8_t *buf, size_t len);
+
+// MPEG-1/2/2.5 Layer III 帧头。
+typedef struct {
+    uint8_t version;       // 1 = MPEG-1, 2 = MPEG-2, 25 = MPEG-2.5
+    uint32_t samplerate;
+    uint32_t bitrate;      // bit/s
+    uint8_t channels;
+    uint32_t frame_len;    // 含帧头的整帧字节数
+} bp_mp3_hdr_t;
+bool bp_mp3_parse_header(const uint8_t *h, bp_mp3_hdr_t *out);
+
+// 在 buf 中查找“可信”的帧起点:帧头有效,且紧随其后的下一帧帧头也有效、参数一致
+// (至少差一帧数据时,at_eof 为真则只校验当前帧)。want 非空时还要求版本/采样率与之一致。
+// 返回偏移;-1 表示 buf 中没有(调用方可丢弃除末尾 3 字节外的数据);
+// -2 表示 *partial 处有候选但需要更多数据才能确认。
+int bp_mp3_find_frame(const uint8_t *buf, size_t len, bool at_eof, const bp_mp3_hdr_t *want,
+                      bp_mp3_hdr_t *out, size_t *partial);
+
+// 把文件名缩短到 cap(含 NUL)以内:保留扩展名,中间用“…”,不切断 UTF-8 字符。
+void bp_name_shorten(const char *src, char *out, size_t cap);
 
 // ID3v2 标签总长度(含 10 字节头和可选尾);无标签或数据不足 10 字节返回 0。
 size_t bp_id3v2_size(const uint8_t *buf, size_t len);

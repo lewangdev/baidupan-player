@@ -4,7 +4,7 @@
 
 # Baidupan Pocket Player
 
-Streams MP3 / WAV audio stored in Baidu Netdisk on the FoloToy AI Passport. The Netdisk
+Streams MP3 / M4A / AAC / WAV audio stored in Baidu Netdisk on the FoloToy AI Passport. The Netdisk
 integration (device-code QR authorization, token refresh, xpan APIs) follows
 [netdisk-recording-badge](https://github.com/openbrt/netdisk-recording-badge).
 
@@ -26,7 +26,7 @@ integration (device-code QR authorization, token refresh, xpan APIs) follows
 2. Authorization: choose "All audio" or "Browse" (the first two home-page items). Scan the QR
    code with a phone, sign in to Baidu, and confirm. The grant is stored on the device; sign out under
    Settings → Netdisk account.
-3. Playback: "All audio" lists every MP3/WAV in name order; "Browse" walks folders, also sorted by name.
+3. Playback: "All audio" lists every MP3/M4A/AAC/WAV file in name order; "Browse" walks folders, also sorted by name.
    Browsing while a track plays pauses it and releases the download connection; press OK on the player to resume. Press OK on a
    track to play. The next track starts automatically, and the next page loads at the end of a page.
 
@@ -46,8 +46,11 @@ The screen turns off after 30 s without input while music keeps playing. A key p
 
 - MP3 (MPEG-1/2 Layer III, CBR/VBR, any sample rate) and 16-bit PCM WAV (mono/stereo, 8–48 kHz).
   The single speaker receives a mono downmix.
-- FLAC, AAC/M4A, OGG and other formats are not supported. Browsing shows only folders and
-  playable files; everything else is hidden.
+- M4A (AAC-LC in MP4) and ADTS AAC. HE-AAC plays its AAC-LC core (fewer high frequencies). M4A files
+  must keep their index (moov) before the audio data, which is the usual layout.
+- The format is detected from file content, so an M4A file named `.mp3` plays correctly.
+- FLAC, OGG and other formats are not supported. Browsing shows only folders and playable files;
+  everything else is hidden.
 - Seeking is not supported. VBR MP3 duration is estimated from the average bitrate.
 - Interrupted downloads resume with HTTP Range, including after a long pause closes the connection.
 - Baidu throttles downloads for non-member accounts, which can affect high-bitrate WAV; MP3 is usually fine.
@@ -57,9 +60,10 @@ The screen turns off after 30 s without input while music keeps playing. A key p
 | Module | Responsibility |
 | --- | --- |
 | `main/bp_baidu.c` | Device-code auth, token refresh (locked; a refresh token is single-use), folder and audio lists, download links |
-| `main/bp_player.c` | Control task → fetch task (follows 302, Range resume) → stream buffer (16–64 KiB by free heap) → decode task (Helix MP3 / WAV) → I2S |
+| `main/bp_player.c` | Control task → fetch task (follows 302, Range resume) → stream buffer (16–64 KiB by free heap) → decode task (Helix MP3 / AAC / WAV) → I2S |
 | `main/bp_ui.c` | Creates every page once at boot; navigation only toggles visibility |
-| `main/bp_media.c` | Pure logic: format detection, ID3v2 skip, WAV parsing, duration, paths (host test `tests/test_bp_media.c`) |
+| `main/bp_media.c` | Pure logic: format detection and content sniffing, MP3 frame checks, ID3v2 skip, WAV parsing, duration, paths (host test `tests/test_bp_media.c`) |
+| `main/bp_mp4.c` | Streaming M4A header parser; mdat is decoded as consecutive raw AAC blocks (host test `tests/test_bp_mp4.c`) |
 | `main/bp_console.c` | Serial commands: `WIFI SET/LIST/DEL/AP`, `BAIDU AUTH/STATUS/LOGOUT`, `STATE`, `KEY`, `UI` |
 
 The `bp_font_16` Chinese font contains all GB2312 characters to render arbitrary file names; it is

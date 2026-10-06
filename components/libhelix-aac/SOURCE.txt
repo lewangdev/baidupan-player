@@ -1,0 +1,5 @@
+Origin: https://github.com/earlephilhower/ESP8266Audio, src/libhelix-aac (commit 10d929ac01436dfe8856e0a06fd9ec35a848c6e2)
+Upstream: RealNetworks Helix fixed-point HE-AAC decoder (2005), RPSL/RCSL license (see file headers).
+Local changes: aacdec.h moved to include/; SBR enabled only with BP_AAC_ENABLE_SBR (aaccommon.h);
+compat/ shims replace Arduino.h and pgmspace.h; ESP_PLATFORM added beside ARDUINO in the
+platform checks of aacdec.h, assembly.h, buffers.c and sbr.c (portable C path).

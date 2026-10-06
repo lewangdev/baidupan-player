@@ -19,6 +19,8 @@
 #include "freertos/queue.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
+#include "aacdec.h"
+#include "bp_mp4.h"
 #include "mp3dec.h"
 #include "nvs.h"
 
@@ -73,8 +75,9 @@ typedef struct {
     uint64_t offset;   // 下一个未解码字节在文件中的偏移
     uint32_t pos_ms;
     uint32_t total_ms;
-    bool is_wav;
+    bp_sniff_t kind;   // 续播用哪个解码器
     bp_wav_info_t wav;
+    bp_m4a_info_t m4a; // 裸 AAC 块没有同步字,续播必须沿用解析出的参数
 } resume_t;
 
 static QueueHandle_t s_cmd;
@@ -104,8 +107,9 @@ static volatile bool s_fetch_parked;    // 暂停时已关闭下载连接,等待
 static volatile bool s_suspended;       // 流水线已拆除,等待续播
 static resume_t s_resume;
 static uint32_t s_base_ms;              // 本条流水线起播时的进度(续播时非 0)
-static bool s_cur_is_wav;
+static bp_sniff_t s_cur_kind;
 static bp_wav_info_t s_cur_wav;
+static bp_m4a_info_t s_cur_m4a;
 static uint32_t s_gen;
 static StreamBufferHandle_t s_stream;
 static const size_t s_stream_size = STREAM_SIZE;
@@ -378,6 +382,11 @@ static const char *play_mp3(inbuf_t *b, uint64_t file_size, size_t id3) {
     uint32_t rate = 0;
     uint64_t frames_out = 0, bitrate_sum = 0, bitrate_frames = 0;
     int errors = 0;
+    // 首个解码成功的帧锁定版本与采样率;之后参数不符的“帧头”都视为误判,
+    // 不再触发重开音频设备(那会导致长时间卡顿)。
+    bp_mp3_hdr_t lock = {0}, hdr;
+    bool locked = false;
+    size_t skipped = 0;   // 连续找不到可信帧时丢弃的字节数
     while (!s_abort) {
         wait_while_paused();
         if (s_abort) break;
@@ -387,16 +396,29 @@ static const char *play_mp3(inbuf_t *b, uint64_t file_size, size_t id3) {
             if (stream_done()) break;
             continue;
         }
-        int sync = MP3FindSyncWord(b->in + b->pos, left);
+        size_t partial = 0;
+        int sync = bp_mp3_find_frame(b->in + b->pos, (size_t)left, stream_done(),
+                                     locked ? &lock : NULL, &hdr, &partial);
+        if (sync == -2) {   // 候选帧的下一帧还没读到,补数据后再确认
+            b->pos += partial;
+            refill(b);
+            continue;
+        }
         if (sync < 0) {
-            // 保留末尾 3 字节,同步字可能跨越缓冲边界。
-            b->pos = left > 3 ? b->len - 3 : b->len;
-            if (++errors > MAX_DECODE_ERRORS) { error = "不是有效的 MP3"; break; }
+            // 保留末尾 3 字节,帧头可能跨越缓冲边界。
+            size_t drop = left > 3 ? (size_t)left - 3 : (size_t)left;
+            b->pos += drop;
+            skipped += drop;
+            if (skipped > 256 * 1024) {
+                error = frames_out ? "解码失败" : "不是有效的 MP3";
+                break;
+            }
             if (!refill(b) && stream_done()) break;
             continue;
         }
         b->pos += sync;
         left -= sync;
+        skipped = 0;
         unsigned char *ptr = b->in + b->pos;
         int err = MP3Decode(dec, &ptr, &left, pcm, 0);
         b->pos = (size_t)(ptr - b->in);
@@ -411,6 +433,10 @@ static const char *play_mp3(inbuf_t *b, uint64_t file_size, size_t id3) {
             continue;
         }
         errors = 0;
+        if (!locked) {
+            lock = hdr;
+            locked = true;
+        }
         MP3FrameInfo fi;
         MP3GetLastFrameInfo(dec, &fi);
         if (fi.nChans < 1 || fi.nChans > 2 || fi.samprate <= 0) continue;
@@ -463,7 +489,7 @@ static const char *play_wav(inbuf_t *b, uint64_t file_size, const bp_wav_info_t 
         if (rc != 0) return rc == -2 ? "仅支持 16 位 PCM WAV" : "不是有效的 WAV";
     }
     s_cur_wav = wav;
-    s_cur_is_wav = true;
+    s_cur_kind = BP_SNIFF_WAV;
     if (!open_codec(wav.rate)) return "音频设备异常";
     uint32_t align = (uint32_t)wav.channels * 2;
     // 流式录制的 WAV 常把 data 长度写成 0 或 0xFFFFFFFF,以文件大小为准。
@@ -508,12 +534,215 @@ static const char *play_wav(inbuf_t *b, uint64_t file_size, const bp_wav_info_t 
     return NULL;
 }
 
+// ---- AAC(M4A 与 ADTS) -----------------------------------------------------------
+// 每次解码前至少缓冲这么多字节:大于双声道 AAC-LC 单块上限(2 x 768 字节),
+// 保证解码器不会读到未到达的数据(流末尾除外)。
+#define AAC_MIN_AVAIL 2048
+
+static void set_aac_info(uint32_t rate, uint16_t ch, uint32_t kbps, uint32_t total_ms) {
+    portENTER_CRITICAL(&s_mux);
+    s_info.rate = rate;
+    s_info.channels = ch;
+    s_info.kbps = kbps;
+    if (total_ms) s_info.total_ms = total_ms;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+// 解码一帧后的公共处理:下混、写 I2S、发布进度。
+static const char *aac_output(HAACDecoder dec, int16_t *pcm, uint64_t *frames_out,
+                              uint32_t *rate, uint32_t total_ms) {
+    AACFrameInfo fi;
+    AACGetLastFrameInfo(dec, &fi);
+    if (fi.nChans < 1 || fi.nChans > 2 || fi.sampRateOut <= 0 || fi.outputSamps <= 0) return NULL;
+    if ((uint32_t)fi.sampRateOut != *rate) {
+        if (!open_codec((uint32_t)fi.sampRateOut)) return "音频设备异常";
+        *rate = (uint32_t)fi.sampRateOut;
+    }
+    size_t frames = (size_t)fi.outputSamps / (size_t)fi.nChans;
+    if (fi.nChans == 2) bp_downmix_s16(pcm, frames);
+    if (bsp_audio_write(pcm, frames * sizeof(int16_t)) != ESP_OK) return "音频设备异常";
+    *frames_out += frames;
+    publish_progress(*frames_out, *rate, total_ms);
+    if ((*frames_out & 0x3fff) < frames) update_buffer_pct();
+    return NULL;
+}
+
+// 从 MP4 的 mdat 中顺序解码裸 AAC 块(data_pos 为 b->pos 处的文件偏移)。
+static const char *play_aac_raw(inbuf_t *b, const bp_m4a_info_t *m4a, uint64_t data_pos,
+                                uint32_t total_ms) {
+    s_cur_kind = BP_SNIFF_MP4;
+    s_cur_m4a = *m4a;
+    HAACDecoder dec = AACInitDecoder();
+    log_heap("aac-decoder-ready");
+    if (!dec) return "内存不足";
+    const char *error = NULL;
+    AACFrameInfo cfg = {.nChans = m4a->channels, .sampRateCore = (int)m4a->samplerate,
+                        .profile = AAC_PROFILE_LC};
+    if (AACSetRawBlockParams(dec, 0, &cfg) != 0) {
+        AACFreeDecoder(dec);
+        return "不支持的 AAC 参数";
+    }
+    uint64_t span = m4a->data_end > m4a->data_start ? m4a->data_end - m4a->data_start : 0;
+    uint32_t kbps = total_ms ? (uint32_t)(span * 8 / total_ms) : 0;
+    set_aac_info(m4a->samplerate, m4a->channels, kbps, total_ms);
+    uint64_t remaining = m4a->data_end > data_pos ? m4a->data_end - data_pos : 0;
+    uint64_t frames_out = 0;
+    uint32_t rate = 0;
+    int errors = 0;
+    while (!s_abort && remaining > 0) {
+        wait_while_paused();
+        if (s_abort) break;
+        if (b->len - b->pos < AAC_MIN_AVAIL && !stream_done()) refill(b);
+        size_t avail = b->len - b->pos;
+        int left = (int)(avail < remaining ? avail : remaining);
+        if (left <= 0) {
+            if (stream_done()) break;
+            continue;
+        }
+        unsigned char *ptr = b->in + b->pos;
+        int before = left;
+        int err = AACDecode(dec, &ptr, &left, s_pcm_storage);
+        size_t used = (size_t)(before - left);
+        b->pos += used;
+        remaining -= used;
+        if (err == ERR_AAC_INDATA_UNDERFLOW) {
+            if (!refill(b) && stream_done()) break;   // 文件被截断
+            continue;
+        }
+        if (err) {
+            // 裸 AAC 没有同步字,出错后无法重新对齐;连续失败即放弃。
+            if (++errors > 8 || !used) {
+                error = frames_out ? "AAC 解码失败" : "不支持的 AAC 编码";
+                break;
+            }
+            continue;
+        }
+        errors = 0;
+        if ((error = aac_output(dec, s_pcm_storage, &frames_out, &rate, total_ms))) break;
+    }
+    if (!error && !s_abort && frames_out == 0) error = "不支持的 AAC 编码";
+    AACFreeDecoder(dec);
+    return error;
+}
+
+// 输入缓冲上的顺序读取接口,供 M4A 头部解析使用。
+static int inbuf_read(void *ctx, uint8_t *dst, size_t n) {
+    inbuf_t *b = ctx;
+    while (n) {
+        if (s_abort) return -1;
+        size_t have = b->len - b->pos;
+        if (!have) {
+            if (!refill(b) && stream_done()) return -1;
+            continue;
+        }
+        size_t c = have < n ? have : n;
+        memcpy(dst, b->in + b->pos, c);
+        b->pos += c;
+        dst += c;
+        n -= c;
+    }
+    return 0;
+}
+
+static int inbuf_skip(void *ctx, uint64_t n) {
+    inbuf_t *b = ctx;
+    while (n) {
+        if (s_abort) return -1;
+        size_t have = b->len - b->pos;
+        if (!have) {
+            if (!refill(b) && stream_done()) return -1;
+            continue;
+        }
+        size_t c = have < n ? have : (size_t)n;
+        b->pos += c;
+        n -= c;
+    }
+    return 0;
+}
+
+static const char *play_m4a(inbuf_t *b, uint64_t file_size) {
+    bp_reader_t r = {inbuf_read, inbuf_skip, b, 0};
+    bp_m4a_info_t info;
+    int rc = bp_m4a_parse(&r, file_size, &info);
+    if (s_abort) return NULL;
+    ESP_LOGI(TAG, "m4a rc=%d rate=%lu ch=%u sbr=%d data=%llu..%llu", rc,
+             (unsigned long)info.samplerate, info.channels, info.sbr,
+             (unsigned long long)info.data_start, (unsigned long long)info.data_end);
+    switch (rc) {
+        case BP_M4A_OK: break;
+        case BP_M4A_NO_AAC: return "不支持的 M4A 编码";
+        case BP_M4A_MOOV_LAST: return "M4A 索引在文件末尾,暂不支持";
+        case BP_M4A_IO: return s_fetch_failed ? "网络错误" : "M4A 文件不完整";
+        default: return "不是有效的 M4A";
+    }
+    return play_aac_raw(b, &info, r.pos, bp_m4a_duration_ms(&info));
+}
+
+// ADTS:每帧自带同步字和参数,可从任意位置重新同步(续播也直接用)。
+static const char *play_adts(inbuf_t *b, uint64_t file_size) {
+    s_cur_kind = BP_SNIFF_AAC;
+    HAACDecoder dec = AACInitDecoder();
+    log_heap("aac-decoder-ready");
+    if (!dec) return "内存不足";
+    const char *error = NULL;
+    uint64_t frames_out = 0;
+    uint32_t rate = 0, total_ms = 0;
+    size_t skipped = 0;
+    int errors = 0;
+    while (!s_abort) {
+        wait_while_paused();
+        if (s_abort) break;
+        if (b->len - b->pos < AAC_MIN_AVAIL && !stream_done()) refill(b);
+        int left = (int)(b->len - b->pos);
+        if (left <= 0) {
+            if (stream_done()) break;
+            continue;
+        }
+        int sync = AACFindSyncWord(b->in + b->pos, left);
+        if (sync < 0) {
+            size_t drop = left > 1 ? (size_t)left - 1 : (size_t)left;
+            b->pos += drop;
+            if ((skipped += drop) > 256 * 1024) { error = "不是有效的 AAC"; break; }
+            if (!refill(b) && stream_done()) break;
+            continue;
+        }
+        b->pos += (size_t)sync;
+        left -= sync;
+        unsigned char *ptr = b->in + b->pos;
+        int before = left;
+        int err = AACDecode(dec, &ptr, &left, s_pcm_storage);
+        b->pos += (size_t)(before - left);
+        if (err == ERR_AAC_INDATA_UNDERFLOW) {
+            if (!refill(b) && stream_done()) break;
+            continue;
+        }
+        if (err) {
+            if (b->pos < b->len) b->pos++;   // 跳过这个同步字,继续找下一帧
+            if (++errors > MAX_DECODE_ERRORS) { error = "AAC 解码失败"; break; }
+            continue;
+        }
+        errors = 0;
+        skipped = 0;
+        if (!total_ms) {
+            AACFrameInfo fi;
+            AACGetLastFrameInfo(dec, &fi);
+            if (fi.bitRate > 0) total_ms = bp_estimate_ms(file_size, (uint32_t)fi.bitRate);
+            set_aac_info((uint32_t)fi.sampRateOut, (uint16_t)fi.nChans,
+                         (uint32_t)fi.bitRate / 1000, total_ms);
+        }
+        if ((error = aac_output(dec, s_pcm_storage, &frames_out, &rate, total_ms))) break;
+    }
+    if (!error && !s_abort && frames_out == 0) error = "不是有效的 AAC";
+    AACFreeDecoder(dec);
+    return error;
+}
+
 static void decode_task(void *arg) {
     track_t *t = arg;
     const char *error = NULL;
     inbuf_t b = {.in = s_in_storage};   // 4 字节对齐(WAV 按 int16 读)
     s_fetch_eof = s_fetch_failed = s_fetch_parked = false;
-    s_cur_is_wav = false;
+    s_cur_kind = BP_SNIFF_MP3;
     s_base_ms = t->resume ? s_resume.pos_ms : 0;
     s_fetch_running = true;
     if (xTaskCreate(fetch_task, "bp_fetch", FETCH_STACK, t, 5, NULL) != pdPASS) {
@@ -528,14 +757,34 @@ static void decode_task(void *arg) {
         goto done;
     }
     if (t->resume) {
-        error = s_resume.is_wav ? play_wav(&b, t->size, &s_resume.wav, t->start)
-                                : play_mp3(&b, t->size, 0);   // 解码器自行重新同步帧头
-    } else if (!memcmp(b.in, "RIFF", 4)) {
-        error = play_wav(&b, t->size, NULL, 0);
+        if (s_resume.kind == BP_SNIFF_WAV) {
+            error = play_wav(&b, t->size, &s_resume.wav, t->start);
+        } else if (s_resume.kind == BP_SNIFF_MP4) {
+            error = play_aac_raw(&b, &s_resume.m4a, t->start, s_resume.total_ms);
+        } else if (s_resume.kind == BP_SNIFF_AAC) {
+            error = play_adts(&b, t->size);
+        } else {
+            error = play_mp3(&b, t->size, 0);   // 重新同步帧头
+        }
     } else {
-        size_t id3 = bp_id3v2_size(b.in, b.len);
-        if (id3 && !discard(&b, id3)) goto done;
-        if (!s_abort) error = play_mp3(&b, t->size, id3);
+        // 按内容识别格式:网盘里常有 M4A 等文件被命名为 .mp3,硬当 MP3 解会误判帧头而卡顿。
+        bp_sniff_t kind = bp_media_sniff(b.in, b.len);
+        ESP_LOGI(TAG, "content sniff=%d", kind);
+        if (kind == BP_SNIFF_WAV) {
+            error = play_wav(&b, t->size, NULL, 0);
+        } else if (kind == BP_SNIFF_MP4) {
+            error = play_m4a(&b, t->size);
+        } else if (kind == BP_SNIFF_AAC) {
+            error = play_adts(&b, t->size);
+        } else if (kind == BP_SNIFF_FLAC) {
+            error = "FLAC 格式暂不支持";
+        } else if (kind == BP_SNIFF_OGG) {
+            error = "OGG 格式暂不支持";
+        } else {
+            size_t id3 = bp_id3v2_size(b.in, b.len);
+            if (id3 && !discard(&b, id3)) goto done;
+            if (!s_abort) error = play_mp3(&b, t->size, id3);
+        }
     }
     if (!error && s_fetch_failed && !s_abort) error = "网络中断";
 done:
@@ -547,8 +796,9 @@ done:
     s_resume.offset = t->start + b.received - (b.len - b.pos);
     s_resume.pos_ms = s_info.pos_ms;
     s_resume.total_ms = s_info.total_ms;
-    s_resume.is_wav = s_cur_is_wav;
+    s_resume.kind = s_cur_kind;
     s_resume.wav = s_cur_wav;
+    s_resume.m4a = s_cur_m4a;
     portEXIT_CRITICAL(&s_mux);
     uint32_t gen = t->gen;
     bool aborted_by_user;
@@ -584,7 +834,7 @@ static void start_track_at(int index, bool resume) {
     uint64_t start = 0;
     if (resume) {
         start = s_resume.offset;
-        if (s_resume.is_wav) {   // 对齐到采样帧边界
+        if (s_resume.kind == BP_SNIFF_WAV) {   // 对齐到采样帧边界
             uint32_t align = (uint32_t)s_resume.wav.channels * 2;
             uint64_t off = s_resume.wav.data_offset;
             start = start > off ? off + (start - off) / align * align : off;
@@ -660,7 +910,7 @@ static bool continue_next_page(void) {
     if (bp_baidu_list_fetch(&req, page) == 0) {
         int n = 0;
         for (int i = 0; i < page->count; i++)
-            if (!page->files[i].is_dir && bp_media_format(page->files[i].name) != BP_FMT_UNKNOWN)
+            if (!page->files[i].is_dir && page->files[i].format != BP_FMT_UNKNOWN)
                 s_playlist[n++] = page->files[i];
         s_pl_req = req;
         s_pl_has_more = page->has_more;
@@ -779,7 +1029,7 @@ int bp_player_play_list(const bp_list_t *list, int index) {
     portENTER_CRITICAL(&s_mux);
     for (int i = 0; i < list->count && n < BP_PLAYLIST_MAX; i++) {
         const bp_file_t *f = &list->files[i];
-        if (f->is_dir || bp_media_format(f->name) == BP_FMT_UNKNOWN) continue;
+        if (f->is_dir || f->format == BP_FMT_UNKNOWN) continue;
         if (i == index) start = n;
         s_pending_list[n++] = *f;
     }

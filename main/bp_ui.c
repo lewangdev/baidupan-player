@@ -346,7 +346,7 @@ static void build_info_pages(void) {
         lv_label_set_long_mode(d, LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_pos(d, 116, y);
     }
-    lv_obj_t *formats = label(p, &bp_font_16, COL_MUTED, "支持 MP3 · WAV(16 位)");
+    lv_obj_t *formats = label(p, &bp_font_16, COL_MUTED, "支持 MP3 · M4A · AAC · WAV");
     lv_obj_align(formats, LV_ALIGN_TOP_MID, 0, 248);
     lv_obj_t *ver = label(p, &bp_font_16, COL_MUTED, "云盘随身听 v" BP_APP_VERSION);
     lv_obj_align(ver, LV_ALIGN_TOP_MID, 0, 270);
@@ -481,7 +481,7 @@ static void refresh_list(void) {
             const bp_file_t *f = &s_list.files[fi];
             text = f->name;
             if (f->is_dir) { icon = LV_SYMBOL_DIRECTORY; icon_col = COL_ACCENT; }
-            else if (bp_media_format(f->name) != BP_FMT_UNKNOWN) { icon = LV_SYMBOL_AUDIO; icon_col = COL_ACCENT; }
+            else if (f->format != BP_FMT_UNKNOWN) { icon = LV_SYMBOL_AUDIO; icon_col = COL_ACCENT; }
             else text_col = COL_MUTED;   // 不支持的格式置灰
         }
         set_text_if(s_row_icons[i], icon);

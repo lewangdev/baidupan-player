@@ -25,7 +25,8 @@ typedef struct {
     uint64_t fs_id;
     uint64_t size;
     bool is_dir;
-    char name[BP_NAME_MAX];
+    uint8_t format;          // bp_format_t,按完整文件名判断(name 可能被缩短)
+    char name[BP_NAME_MAX];  // 显示用;超长时缩短为“前半…扩展名”
 } bp_file_t;
 
 // 列表来源:目录浏览,或网盘内全部 MP3/WAV(按修改时间倒序)。

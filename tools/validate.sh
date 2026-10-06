@@ -45,6 +45,19 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -I"${test_dir}" \
         tests/test_bp_keys.c main/bp_keys.c -o "${test_dir}/test_bp_keys"
     "${test_dir}/test_bp_keys"
+    # M4A 解析 + Helix AAC 裸块顺序解码(第三方解码器源码不套用本仓库的告警级别)。
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Icomponents/libhelix-aac/include \
+        -DARDUINO -c tests/test_bp_mp4.c -o "${test_dir}/test_bp_mp4.o"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -c main/bp_mp4.c \
+        -o "${test_dir}/bp_mp4.o"
+    for src in components/libhelix-aac/src/*.c; do
+        "${CC:-cc}" -std=c11 -O1 -w -DARDUINO -Icomponents/libhelix-aac/include \
+            -Icomponents/libhelix-aac/src -Icomponents/libhelix-aac/compat \
+            -c "${src}" -o "${test_dir}/helix_$(basename "${src}" .c).o"
+    done
+    "${CC:-cc}" "${test_dir}/test_bp_mp4.o" "${test_dir}/bp_mp4.o" "${test_dir}"/helix_*.o \
+        -o "${test_dir}/test_bp_mp4"
+    "${test_dir}/test_bp_mp4" tests/fixtures
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"

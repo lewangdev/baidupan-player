@@ -402,14 +402,9 @@ static int append_entries(const cJSON *list, bp_list_t *out, bool *stopped) {
         f->fs_id = (uint64_t)id->valuedouble;
         f->size = cJSON_IsNumber(size) ? (uint64_t)size->valuedouble : 0;
         f->is_dir = is_dir;
-        // 超长文件名截断到缓冲,保持 UTF-8 完整(回退到字符起始字节)。
-        strlcpy(f->name, name->valuestring, sizeof(f->name));
-        size_t len = strlen(f->name);
-        if (len == sizeof(f->name) - 1) {
-            size_t cut = len;
-            while (cut > 0 && ((unsigned char)f->name[cut] & 0xC0) == 0x80) cut--;
-            f->name[cut] = 0;
-        }
+        // 格式按完整文件名判断;显示名超长时缩短为“前半…扩展名”,不切断中文字符。
+        f->format = is_dir ? BP_FMT_UNKNOWN : (uint8_t)bp_media_format(name->valuestring);
+        bp_name_shorten(name->valuestring, f->name, sizeof(f->name));
     }
     return n;
 }
@@ -426,7 +421,7 @@ static int fetch_chunk(const bp_list_req_t *req, uint32_t cursor, bp_list_t *out
             snprintf(url, 1280,
                      "https://pan.baidu.com/rest/2.0/xpan/multimedia?method=categorylist"
                      "&access_token=%s&category=2&parent_path=%%2F&recursion=1"
-                     "&ext=mp3%%2Cwav&order=name&desc=0&start=%lu&limit=%d",
+                     "&ext=mp3%%2Cwav%%2Cm4a%%2Caac&order=name&desc=0&start=%lu&limit=%d",
                      access, (unsigned long)cursor, BP_PAGE_SIZE);
         } else {
             char dir_enc[3 * BP_PATH_MAX];
