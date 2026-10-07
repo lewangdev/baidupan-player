@@ -18,6 +18,7 @@ target_sources(${COMPONENT_LIB} PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/bp_font_24.c"
     "${CMAKE_CURRENT_LIST_DIR}/../assets/images/bp_reel_disc.c"
     "${CMAKE_CURRENT_LIST_DIR}/../assets/images/bp_fish.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../assets/images/bp_char_discs.c"
 )
 
 # 百度应用凭据:构建时从被 Git 忽略的 bp_baidu_keys.h 生成编码后的 bp_keys_obf.h,

@@ -101,10 +101,10 @@ static void cmd_baidu(const char *arg) {
 static void cmd_state(void) {
     bp_player_info_t pi;
     bp_player_get_info(&pi);
-    printf("STATE: page=%d wifi=%d bd=%d off=%d vol=%u bri=%u play=%d pos=%lu/%lu idx=%d/%d "
+    printf("STATE: page=%d wifi=%d bd=%d off=%d vol=%u bri=%u skin=%u play=%d pos=%lu/%lu idx=%d/%d "
            "rate=%lu ch=%u kbps=%lu buf=%u%% err=%s name=%s\r\n",
            bp_test_page(), g_bp.wifi_up, bp_baidu_state(), g_bp.screen_off, g_bp.volume, g_bp.brightness,
-           pi.state, (unsigned long)pi.pos_ms, (unsigned long)pi.total_ms, pi.index + 1,
+           g_bp.skin, pi.state, (unsigned long)pi.pos_ms, (unsigned long)pi.total_ms, pi.index + 1,
            pi.count, (unsigned long)pi.rate, pi.channels, (unsigned long)pi.kbps,
            pi.buffer_pct, pi.error ? pi.error : "-", pi.name);
 }

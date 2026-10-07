@@ -60,7 +60,10 @@ static lv_obj_t *s_rows[LIST_ROWS], *s_row_icons[LIST_ROWS], *s_row_texts[LIST_R
 static bp_list_t s_list;     // 最近一次快照
 static int s_list_rows;      // 虚拟行数(文件 + 上/下一页)
 
-// 播放页:经典与磁带两套界面放在同一页里,按 g_bp.skin 显示其一。
+// 播放页:经典与磁带(含人物磁带)界面放在同一页里,按 g_bp.skin 显示其一。
+
+const char *const BP_SKIN_NAMES[BP_SKIN_COUNT] = {"经典", "磁带", "布鲁伊", "小猪佩奇"};
+extern const lv_image_dsc_t bp_disc_bluey_thumb, bp_disc_bingo_thumb, bp_disc_peppa_thumb;
 static lv_obj_t *s_pl_classic, *s_pl_reel;
 static int64_t s_anim_last;
 static int s_built_skin = -1;
@@ -77,7 +80,7 @@ static lv_obj_t *s_set_items[MENU_ROWS], *s_set_icons[MENU_ROWS], *s_set_texts[M
 static lv_obj_t *s_set_vals[MENU_ROWS], *s_set_thumb;
 
 // 播放界面选择页
-static lv_obj_t *s_skin_card[2], *s_skin_tag[2];
+static lv_obj_t *s_skin_card[BP_SKIN_COUNT], *s_skin_tag[BP_SKIN_COUNT], *s_skin_name[BP_SKIN_COUNT];
 static lv_obj_t *s_wifi_info, *s_wifi_action, *s_acct_state, *s_acct_action, *s_acct_hint;
 static bool s_acct_armed;
 
@@ -273,10 +276,10 @@ static void build_auth(void) {
 
 static const char *const MENU_ICONS[BP_MENU_COUNT] = {
     LV_SYMBOL_AUDIO, LV_SYMBOL_DIRECTORY, LV_SYMBOL_IMAGE, LV_SYMBOL_EYE_OPEN,
-    LV_SYMBOL_WIFI, LV_SYMBOL_DRIVE, LV_SYMBOL_LIST,
+    LV_SYMBOL_WIFI, LV_SYMBOL_DRIVE, LV_SYMBOL_LIST, LV_SYMBOL_LEFT,
 };
 static const char *const MENU_TEXTS[BP_MENU_COUNT] = {
-    "全部音频", "浏览网盘", "播放界面", "屏幕亮度", "无线网络", "网盘账号", "关于与按键",
+    "全部音频", "浏览网盘", "播放界面", "屏幕亮度", "无线网络", "网盘账号", "关于与按键", "返回",
 };
 
 static void build_settings(void) {
@@ -294,56 +297,70 @@ static void build_settings(void) {
 }
 
 // 播放界面选择:两张卡片,上/下切换,OK 应用。
-static void build_skin(void) {
-    lv_obj_t *p = s_pages[BP_PAGE_SKIN] = page();
-    page_title(p, "播放界面");
+// 皮肤卡片缩略图:两个磁带轮 + 走带线 + 两条文字条;img 为空时画普通转轮。
+static void tape_thumb(lv_obj_t *c, const lv_image_dsc_t *l, const lv_image_dsc_t *r) {
     for (int i = 0; i < 2; i++) {
-        int x = i ? 126 : 22;
-        s_skin_card[i] = box(p, x, 72, 92, 128, i ? 0x20E47C : COL_BG, 14);
-        lv_obj_set_style_border_width(s_skin_card[i], 1, 0);
-        lv_obj_set_style_border_color(s_skin_card[i], lv_color_hex(0x2C3A55), 0);
-        lv_obj_t *name = label(p, &bp_font_16, COL_TEXT, i ? "磁带" : "经典");
-        lv_obj_set_width(name, 92);
-        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_pos(name, x, 206);
-        s_skin_tag[i] = label(p, &bp_font_16, COL_ACCENT, "");
-        lv_obj_set_width(s_skin_tag[i], 92);
-        lv_obj_set_style_text_align(s_skin_tag[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_pos(s_skin_tag[i], x, 230);
-    }
-    // 经典缩略图:进度环 + 播放三角 + 文本条。
-    lv_obj_t *c = s_skin_card[0];
-    lv_obj_t *ring = lv_arc_create(c);
-    lv_obj_set_size(ring, 52, 52);
-    lv_obj_set_pos(ring, 19, 14);
-    lv_arc_set_rotation(ring, 270);
-    lv_arc_set_bg_angles(ring, 0, 360);
-    lv_arc_set_value(ring, 60);
-    lv_obj_remove_style(ring, NULL, LV_PART_KNOB);
-    lv_obj_remove_flag(ring, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_width(ring, 4, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(ring, 4, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(ring, lv_color_hex(COL_SURFACE2), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(ring, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
-    lv_obj_t *tri = label(ring, &lv_font_montserrat_14, COL_ACCENT, LV_SYMBOL_PLAY);
-    lv_obj_center(tri);
-    box(c, 20, 84, 50, 5, COL_TEXT, 2);
-    box(c, 28, 95, 34, 4, COL_MUTED, 2);
-    box(c, 24, 108, 42, 3, COL_SURFACE2, 2);
-    // 磁带缩略图:两个水平对齐的转轮 + 走带线 + 封面与文字条。
-    c = s_skin_card[1];
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t *reel = box(c, i ? 49 : 8, 20, 32, 32, 0xEFFFF5, LV_RADIUS_CIRCLE);
+        const lv_image_dsc_t *img = i ? r : l;
+        if (img) {
+            lv_obj_t *o = lv_image_create(c);
+            lv_image_set_src(o, img);
+            lv_obj_set_pos(o, i ? 50 : 6, 6);
+            continue;
+        }
+        lv_obj_t *reel = box(c, i ? 52 : 8, 8, 32, 32, 0xEFFFF5, LV_RADIUS_CIRCLE);
         lv_obj_set_style_border_width(reel, 1, 0);
         lv_obj_set_style_border_color(reel, lv_color_hex(0x092113), 0);
         box(reel, 11, 11, 10, 10, i ? 0x0A8F4D : 0x092113, LV_RADIUS_CIRCLE);
     }
-    box(c, 10, 64, 70, 1, 0x092113, 0);
-    box(c, 10, 76, 16, 16, 0x0E3B24, 3);
-    box(c, 32, 78, 44, 5, 0x092113, 2);
-    box(c, 32, 87, 30, 4, 0x092113, 2);
+    box(c, 10, 50, 72, 1, 0x092113, 0);
+    box(c, 10, 58, 44, 5, 0x092113, 2);
+    box(c, 10, 67, 30, 4, 0x092113, 2);
+}
+
+static void build_skin(void) {
+    lv_obj_t *p = s_pages[BP_PAGE_SKIN] = page();
+    page_title(p, "播放界面");
+    static const uint32_t bg[BP_SKIN_COUNT] = {COL_BG, 0x20E47C, 0x5CB8EC, 0xF58FB3};
+    for (int i = 0; i < BP_SKIN_COUNT; i++) {
+        int x = i % 2 ? 126 : 22, y = i / 2 ? 166 : 60;
+        lv_obj_t *c = s_skin_card[i] = box(p, x, y, 92, 80, bg[i], 14);
+        lv_obj_set_style_border_width(c, 1, 0);
+        lv_obj_set_style_border_color(c, lv_color_hex(0x2C3A55), 0);
+        s_skin_name[i] = label(p, &bp_font_16, COL_TEXT, BP_SKIN_NAMES[i]);
+        lv_obj_set_width(s_skin_name[i], 92);
+        lv_obj_set_style_text_align(s_skin_name[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(s_skin_name[i], x, y + 81);
+        switch (i) {
+            case BP_SKIN_CLASSIC: {   // 进度环 + 播放三角 + 文本条
+                lv_obj_t *ring = lv_arc_create(c);
+                lv_obj_set_size(ring, 42, 42);
+                lv_obj_set_pos(ring, 25, 4);
+                lv_arc_set_rotation(ring, 270);
+                lv_arc_set_bg_angles(ring, 0, 360);
+                lv_arc_set_value(ring, 60);
+                lv_obj_remove_style(ring, NULL, LV_PART_KNOB);
+                lv_obj_remove_flag(ring, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_set_style_arc_width(ring, 4, LV_PART_MAIN);
+                lv_obj_set_style_arc_width(ring, 4, LV_PART_INDICATOR);
+                lv_obj_set_style_arc_color(ring, lv_color_hex(COL_SURFACE2), LV_PART_MAIN);
+                lv_obj_set_style_arc_color(ring, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
+                lv_obj_t *tri = label(ring, &lv_font_montserrat_14, COL_ACCENT, LV_SYMBOL_PLAY);
+                lv_obj_center(tri);
+                box(c, 20, 54, 50, 5, COL_TEXT, 2);
+                box(c, 28, 65, 34, 4, COL_MUTED, 2);
+                break;
+            }
+            case BP_SKIN_REEL: tape_thumb(c, NULL, NULL); break;
+            case BP_SKIN_BLUEY: tape_thumb(c, &bp_disc_bluey_thumb, &bp_disc_bingo_thumb); break;
+            default: tape_thumb(c, &bp_disc_peppa_thumb, &bp_disc_peppa_thumb); break;
+        }
+        // 使用中:右下角的勾。
+        s_skin_tag[i] = box(c, 68, 56, 18, 18, 0x092113, LV_RADIUS_CIRCLE);
+        lv_obj_t *ok = label(s_skin_tag[i], &lv_font_montserrat_14, 0xFFFFFF, LV_SYMBOL_OK);
+        lv_obj_center(ok);
+    }
     lv_obj_t *hint = label(p, &bp_font_16, COL_MUTED, "上/下 选择 · OK 应用");
-    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 264);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 278);
 }
 
 static lv_obj_t *info_label(lv_obj_t *p, int y) {
@@ -634,8 +651,8 @@ static void refresh_settings(void) {
     snprintf(bri, sizeof(bri), "%d / %d", g_bp.brightness, BP_BRIGHTNESS_LEVELS);
     if (g_bp.wifi_up) bp_wifi_get_ssid(ssid, sizeof(ssid));
     const char *vals[BP_MENU_COUNT] = {
-        "", "", g_bp.skin == BP_SKIN_REEL ? "磁带" : "经典", bri,
-        g_bp.wifi_up ? ssid : "未连接", bp_baidu_state() == BP_BD_READY ? "已绑定" : "未绑定", "",
+        "", "", BP_SKIN_NAMES[g_bp.skin], bri,
+        g_bp.wifi_up ? ssid : "未连接", bp_baidu_state() == BP_BD_READY ? "已绑定" : "未绑定", "", "",
     };
     int sel = s_sel[BP_PAGE_SETTINGS];
     int first = sel - MENU_ROWS / 2;
@@ -655,16 +672,19 @@ static void refresh_settings(void) {
 
 static void refresh_skin(void) {
     int sel = s_sel[BP_PAGE_SKIN];
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < BP_SKIN_COUNT; i++) {
+        bool used = (int)g_bp.skin == i;
         lv_obj_set_style_border_width(s_skin_card[i], i == sel ? 3 : 1, 0);
         lv_obj_set_style_border_color(s_skin_card[i], lv_color_hex(i == sel ? 0xFFFFFF : 0x2C3A55), 0);
-        set_text_if(s_skin_tag[i], (int)g_bp.skin == (i ? BP_SKIN_REEL : BP_SKIN_CLASSIC) ? "使用中" : "");
+        lv_obj_set_style_text_color(s_skin_name[i], lv_color_hex(used ? COL_ACCENT : COL_TEXT), 0);
+        if (used) lv_obj_remove_flag(s_skin_tag[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_skin_tag[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
 
 // 磁带界面自带状态栏;显示它时隐藏全局状态栏,避免重叠。
 static void apply_status_visibility(void) {
-    bool hide = s_page == BP_PAGE_PLAYER && g_bp.skin == BP_SKIN_REEL;
+    bool hide = s_page == BP_PAGE_PLAYER && bp_skin_is_tape(g_bp.skin);
     lv_obj_t *items[] = {s_st_wifi, s_st_play, s_st_batt};
     for (size_t i = 0; i < 3; i++) {
         if (hide) lv_obj_add_flag(items[i], LV_OBJ_FLAG_HIDDEN);
@@ -675,7 +695,7 @@ static void apply_status_visibility(void) {
 static void refresh_player_page(void) {
     bp_player_info_t pi;
     bp_player_get_info(&pi);
-    if (g_bp.skin == BP_SKIN_REEL) bp_reel_refresh(&pi);
+    if (bp_skin_is_tape(g_bp.skin)) bp_reel_refresh(&pi);
     else refresh_player();
 }
 
@@ -685,7 +705,7 @@ static void anim_timer_cb(lv_timer_t *t) {
     int64_t now = esp_timer_get_time() / 1000;
     uint32_t dt = s_anim_last ? (uint32_t)(now - s_anim_last) : ANIM_MS;
     s_anim_last = now;
-    if (s_page != BP_PAGE_PLAYER || g_bp.skin != BP_SKIN_REEL || g_bp.screen_off) return;
+    if (s_page != BP_PAGE_PLAYER || !bp_skin_is_tape(g_bp.skin) || g_bp.screen_off) return;
     if (dt > 200) dt = 200;
     bp_player_info_t pi;
     bp_player_get_info(&pi);
@@ -818,7 +838,7 @@ void bp_ui_toast(const char *text) {
 
 void bp_ui_move(int delta) {
     int count = s_page == BP_PAGE_SETTINGS ? BP_MENU_COUNT :
-                s_page == BP_PAGE_SKIN ? 2 :
+                s_page == BP_PAGE_SKIN ? BP_SKIN_COUNT :
                 s_page == BP_PAGE_LIST ? s_list_rows : 0;
     if (count <= 0) return;
     int sel = s_sel[s_page] + delta;
@@ -837,11 +857,11 @@ void bp_ui_set_selected(bp_page_t page, int sel) {
 }
 
 void bp_ui_apply_skin(void) {
-    bool reel = g_bp.skin == BP_SKIN_REEL;
+    bool reel = bp_skin_is_tape(g_bp.skin);
     if (s_built_skin != (int)g_bp.skin) {   // 只保留当前皮肤的对象
         lv_obj_clean(s_pl_reel);
         lv_obj_clean(s_pl_classic);
-        if (reel) bp_reel_build(s_pl_reel);
+        if (reel) bp_reel_build(s_pl_reel, (bp_skin_t)g_bp.skin);
         else build_classic(s_pl_classic);
         s_built_skin = g_bp.skin;
     }
@@ -859,7 +879,7 @@ void bp_ui_apply_skin(void) {
 void bp_ui_reel_kick(int dir) { bp_reel_kick(dir); }
 
 void bp_ui_volume_feedback(void) {
-    if (g_bp.skin == BP_SKIN_REEL) bp_reel_volume();
+    if (bp_skin_is_tape(g_bp.skin)) bp_reel_volume();
     if (s_page == BP_PAGE_PLAYER) refresh_player_page();
 }
 

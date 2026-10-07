@@ -1,13 +1,14 @@
-// main/bp_ui_reel.c —— 磁带风格播放界面(品牌绿底)。
+// main/bp_ui_reel.c —— 磁带风格播放界面(磁带为品牌绿底;人物磁带换盘面与底色)。
 //
 // 布局(240x320):顶部状态栏与进度线;左右两个开盘磁带轮水平对齐,中间是 TRACK
-// 与曲目号;走带线上一黑一白两条声波;下方时间、封面字块、歌名、文件夹、滚动信息行;
+// 与曲目号;走带线上一黑一白两条声波;下方时间、歌名、文件夹、滚动信息行;
 // 底部一条切成两段的鱼(参考 docs/fish.mov),鱼头(左)与鱼尾(右)之间是一排声波竖条。
 //
 // 性能(单核 160 MHz,同时在下载与解码):
 // - 盘面三重对称:0..120° 每 5° 预渲染一帧存在 flash(tools/generate_reel_disc.py),
 //   转动时只切换帧,不做运行时旋转(不占临时缓冲、不耗 CPU 变换);
 //   磁带卷是盘面后面的圆,透过窗口露出,只在卷径变化时调整。
+// - 人物盘面(tools/generate_character_discs.py)没有对称性,整圈每 10° 一帧。
 // - 两条走带声波用 lv_line,只更新点坐标,每条线限定在一个窄条区域内重绘。
 // - 鱼头、鱼尾是 flash 中的 A8 线稿(tools/generate_fish.py),按摆动幅度预渲染 9 帧,
 //   播放时像参考视频那样缓慢摆动(切帧加 1~2 像素浮动);声波竖条在一个对象的
@@ -24,12 +25,11 @@
 #include <time.h>
 
 LV_FONT_DECLARE(bp_font_16);
-#define DISC_FRAMES 24
-extern const lv_image_dsc_t bp_reel_disc[DISC_FRAMES];
+extern const lv_image_dsc_t bp_reel_disc[24];
+extern const lv_image_dsc_t bp_disc_bluey[36], bp_disc_bingo[36], bp_disc_peppa[36];
 #define FISH_FRAMES 9
 extern const lv_image_dsc_t bp_fish_head[FISH_FRAMES], bp_fish_tail[FISH_FRAMES];
 
-#define COL_BG     0x20E47C   // ai-passport.folotoy.cn --passport-green
 #define COL_INK    0x092113   // --passport-on-green
 #define COL_TAPE_R 0x0A8F4D
 #define COL_WHITE  0xFFFFFF
@@ -54,6 +54,24 @@ extern const lv_image_dsc_t bp_fish_head[FISH_FRAMES], bp_fish_tail[FISH_FRAMES]
 #define BAR_HALF 11          // 竖条最大半高
 #define HEAD_X 14            // 鱼头/鱼尾图片位置(图片四周各留 3 像素摆动余量)
 #define TAIL_X 165
+
+// 磁带界面的变体:盘面帧(左/右)、帧数、一个周期的角度、底色、是否画中心轴。
+typedef struct {
+    const lv_image_dsc_t *disc[2];
+    int frames;
+    float period;
+    uint32_t bg;
+    bool hub;
+} reel_variant_t;
+
+static const reel_variant_t VARIANTS[] = {
+    // 盘面三重对称:0..120° 共 24 帧。底色为 ai-passport.folotoy.cn --passport-green。
+    {{bp_reel_disc, bp_reel_disc}, 24, 120.0f, 0x20E47C, true},
+    // 人物盘面没有对称性:整圈 36 帧;脸在中心,不画中心轴。
+    {{bp_disc_bluey, bp_disc_bingo}, 36, 360.0f, 0x5CB8EC, false},
+    {{bp_disc_peppa, bp_disc_peppa}, 36, 360.0f, 0xF58FB3, false},
+};
+static const reel_variant_t *s_var = &VARIANTS[0];
 
 static lv_obj_t *s_wifi, *s_clock, *s_right, *s_prog_fill, *s_prog_dot;
 static lv_obj_t *s_tape[2], *s_disc[2], *s_slant[2];
@@ -172,13 +190,14 @@ static void fish_pose(void) {
 }
 
 // ---- 构建 -------------------------------------------------------------------------
-void bp_reel_build(lv_obj_t *parent) {
+void bp_reel_build(lv_obj_t *parent, bp_skin_t skin) {
+    s_var = &VARIANTS[skin == BP_SKIN_BLUEY ? 1 : skin == BP_SKIN_PEPPA ? 2 : 0];
     s_ticker_idx = -1;
     s_vol_until = 0;
     s_settled = false;
     s_kick = 0;
     s_frame[0] = s_frame[1] = 0;
-    lv_obj_t *p = rect(parent, 0, 0, 240, 320, COL_BG, 0);
+    lv_obj_t *p = rect(parent, 0, 0, 240, 320, s_var->bg, 0);
 
     // 状态栏:左 Wi-Fi + 时间,右 音量 + 电量;下方细进度线。
     s_wifi = text(p, &lv_font_montserrat_14, COL_INK, LV_SYMBOL_WIFI);
@@ -205,8 +224,9 @@ void bp_reel_build(lv_obj_t *parent) {
     for (int i = 0; i < 2; i++) {
         int cx = i ? CX_R : CX_L;
         s_disc[i] = lv_image_create(p);
-        lv_image_set_src(s_disc[i], &bp_reel_disc[0]);
+        lv_image_set_src(s_disc[i], &s_var->disc[i][0]);
         lv_obj_set_pos(s_disc[i], cx - DISC_R, CY - DISC_R);
+        if (!s_var->hub) continue;
         circle(p, cx, CY, 9, COL_WHITE, 2, COL_INK);
         circle(p, cx, CY, 3, i ? COL_INK : COL_TAPE_R, 0, 0);
     }
@@ -252,9 +272,9 @@ void bp_reel_build(lv_obj_t *parent) {
     lv_obj_set_pos(s_folder, 44, 200);
 
     // 滚动信息行:4 行叠放,定期向上滑动一行。
-    lv_obj_t *tk = rect(p, 24, 228, 192, TICKER_H, COL_BG, 0);
+    lv_obj_t *tk = rect(p, 24, 228, 192, TICKER_H, s_var->bg, 0);
     lv_obj_set_style_bg_opa(tk, LV_OPA_TRANSP, 0);
-    s_ticker_in = rect(tk, 0, 0, 192, TICKER_H * 4, COL_BG, 0);
+    s_ticker_in = rect(tk, 0, 0, 192, TICKER_H * 4, s_var->bg, 0);
     lv_obj_set_style_bg_opa(s_ticker_in, LV_OPA_TRANSP, 0);
     for (int i = 0; i < 4; i++) {
         s_ticker[i] = text(s_ticker_in, &bp_font_16, COL_INK, "");
@@ -274,7 +294,7 @@ void bp_reel_build(lv_obj_t *parent) {
     s_fish_hf = s_fish_tf = -1;
     s_fish_hy = s_fish_ty = 99;
     fish_pose();
-    s_bars = rect(p, BAR_X, FISH_Y - BAR_HALF - 1, N_BARS * BAR_STEP, 2 * BAR_HALF + 3, COL_BG, 0);
+    s_bars = rect(p, BAR_X, FISH_Y - BAR_HALF - 1, N_BARS * BAR_STEP, 2 * BAR_HALF + 3, s_var->bg, 0);
     lv_obj_set_style_bg_opa(s_bars, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(s_bars, bars_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     for (int i = 0; i < N_BARS; i++) s_bar_h[i] = s_bar_t[i] = 1;
@@ -420,10 +440,10 @@ void bp_reel_tick(uint32_t dt_ms, const bp_player_info_t *pi) {
     for (int i = 0; i < 2; i++) {
         s_angle[i] = fmodf(s_angle[i] + dt * s_spin * SPIN_K / s_tape_r[i], 360.0f);
         if (s_angle[i] < 0) s_angle[i] += 360.0f;
-        int frame = (int)(fmodf(s_angle[i], 120.0f) * DISC_FRAMES / 120.0f) % DISC_FRAMES;
+        int frame = (int)(fmodf(s_angle[i], s_var->period) * s_var->frames / s_var->period) % s_var->frames;
         if (frame != s_frame[i]) {
             s_frame[i] = frame;
-            lv_image_set_src(s_disc[i], &bp_reel_disc[frame]);
+            lv_image_set_src(s_disc[i], &s_var->disc[i][frame]);
         }
     }
 

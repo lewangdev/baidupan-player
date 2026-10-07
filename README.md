@@ -55,14 +55,15 @@
 | Player (start screen) | Volume ±10 | Play / pause (opens *All audio* if nothing is loaded) | Open Settings | Previous / next track |
 | Settings menu | Select | Open | Back to the player | — |
 | List | Select | Open folder / play / page | Parent folder / Settings | Move 5 rows |
-| Player skin | Classic or Tape | Apply (saved) | Back to Settings | — |
+| Player skin | Classic, Tape, Bluey or Peppa (2×2 grid) | Apply (saved) | Back to Settings | — |
 | Brightness | Level 1–5 (default 3, saved) | — | Back to Settings | — |
 | Wi-Fi | — | Start setup hotspot | Back to Settings | — |
 
-The Settings menu holds *All audio*, *Browse*, *Player skin*, *Brightness*, *Wi-Fi*, *Netdisk account* and
-*About*. The **Tape** skin shows two spinning reels (the emptier reel spins faster), black and white
+The Settings menu holds *All audio*, *Browse*, *Player skin*, *Brightness*, *Wi-Fi*, *Netdisk account*,
+*About* and *Back* (returns to the player, like a long OK). The **Tape** skin shows two spinning reels (the emptier reel spins faster), black and white
 waveforms on the tape, and a fish cut in two whose swaying head and tail are joined by live
-sound-wave bars; the **Classic** skin is the progress ring.
+sound-wave bars; the **Classic** skin is the progress ring. The **Bluey** and **Peppa** skins are tape
+variants whose reels are spinning fan-drawn character faces (a blue and an orange pup; a pink pig).
 
 ## Supported audio
 

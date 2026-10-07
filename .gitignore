@@ -14,3 +14,6 @@ managed_components/
 
 # Local Baidu Netdisk app credentials (see main/bp_baidu_keys.example.h).
 /main/bp_baidu_keys.h
+
+# Python bytecode from the asset generators.
+__pycache__/

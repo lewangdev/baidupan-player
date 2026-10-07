@@ -38,14 +38,15 @@ integration (device-code QR authorization, token refresh, xpan APIs) follows
 | Player (start screen) | Volume ±10 | Play / pause (opens *All audio* if nothing is loaded) | Open Settings | Previous / next track |
 | Settings menu | Select | Open | Back to the player | — |
 | List | Select | Open folder / play / page | Parent folder / Settings | Move 5 rows |
-| Player skin | Classic or Tape | Apply (saved) | Back to Settings | — |
+| Player skin | Classic, Tape, Bluey or Peppa (2×2 grid) | Apply (saved) | Back to Settings | — |
 | Brightness | Level 1–5 (default 3, saved) | — | Back to Settings | — |
 | Wi-Fi | — | Start setup hotspot | Back to Settings | — |
 
-The Settings menu holds *All audio*, *Browse*, *Player skin*, *Brightness*, *Wi-Fi*, *Netdisk account* and
-*About*. The **Tape** skin shows two spinning reels (the emptier reel spins faster), black and white
+The Settings menu holds *All audio*, *Browse*, *Player skin*, *Brightness*, *Wi-Fi*, *Netdisk account*,
+*About* and *Back* (returns to the player, like a long OK). The **Tape** skin shows two spinning reels (the emptier reel spins faster), black and white
 waveforms on the tape, and a fish cut in two whose swaying head and tail are joined by live
-sound-wave bars; the **Classic** skin is the progress ring.
+sound-wave bars; the **Classic** skin is the progress ring. The **Bluey** and **Peppa** skins are tape
+variants whose reels are spinning fan-drawn character faces (a blue and an orange pup; a pink pig).
 
 On the setup hotspot page, a long OK closes the hotspot and goes back.
 
@@ -71,7 +72,7 @@ The screen turns off after 30 s without input while music keeps playing. A key p
 | `main/bp_baidu.c` | Device-code auth, token refresh (locked; a refresh token is single-use), folder and audio lists, download links |
 | `main/bp_player.c` | Control task → fetch task (follows 302, Range resume) → static 20 KiB stream buffer → decode task (Helix MP3 / AAC / WAV) → I2S |
 | `main/bp_ui.c` | Player, list and settings pages stay resident; other pages are built on entry and freed on exit; only the active skin exists |
-| `main/bp_ui_reel.c` | Tape skin: 24 reel frames and 9 swing frames per fish half pre-rendered in flash (no runtime rotation), waveforms follow the live audio level |
+| `main/bp_ui_reel.c` | Tape skin: 24 reel frames and 9 swing frames per fish half (plus 36-frame character discs) pre-rendered in flash (no runtime rotation), waveforms follow the live audio level |
 | `main/bp_media.c` | Pure logic: format detection and content sniffing, MP3 frame checks, ID3v2 skip, WAV parsing, duration, paths (host test `tests/test_bp_media.c`) |
 | `main/bp_mp4.c` | Streaming M4A header parser; mdat is decoded as consecutive raw AAC blocks (host test `tests/test_bp_mp4.c`) |
 | `main/bp_console.c` | Serial commands: `WIFI SET/LIST/DEL/AP`, `BAIDU AUTH/STATUS/LOGOUT`, `STATE`, `LIST`, `HEAP`, `STOP`, `KEY`, `UI` |

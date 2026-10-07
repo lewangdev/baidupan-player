@@ -31,6 +31,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "main";
@@ -86,7 +87,7 @@ static void load_ui_prefs(void) {
         nvs_close(h);
     }
     g_bp.brightness = (uint8_t)bp_brightness_step(level, 0);
-    g_bp.skin = skin == BP_SKIN_CLASSIC ? BP_SKIN_CLASSIC : BP_SKIN_REEL;
+    g_bp.skin = skin < BP_SKIN_COUNT ? skin : BP_SKIN_REEL;
 }
 
 static void save_ui_pref(const char *key, uint8_t value) {
@@ -115,7 +116,9 @@ static void set_skin(bp_skin_t skin) {
         bp_ui_apply_skin();
         bsp_lvgl_unlock();
     }
-    bp_ui_toast(skin == BP_SKIN_REEL ? "已切换为磁带界面" : "已切换为经典界面");
+    char msg[48];
+    snprintf(msg, sizeof(msg), "已切换为%s界面", BP_SKIN_NAMES[skin]);
+    bp_ui_toast(msg);
 }
 
 static void on_wifi_event(int evt, const char *data) {
@@ -376,7 +379,7 @@ static void handle_input(const input_event_t *in) {
                         break;
                     case BP_MENU_SKIN:
                         if (bsp_lvgl_lock(500)) {
-                            bp_ui_set_selected(BP_PAGE_SKIN, g_bp.skin == BP_SKIN_REEL ? 1 : 0);
+                            bp_ui_set_selected(BP_PAGE_SKIN, g_bp.skin);
                             bp_ui_goto(BP_PAGE_SKIN);
                             bsp_lvgl_unlock();
                         }
@@ -385,6 +388,7 @@ static void handle_input(const input_event_t *in) {
                     case BP_MENU_WIFI: go(BP_PAGE_WIFI); break;
                     case BP_MENU_ACCOUNT: go(BP_PAGE_ACCOUNT); break;
                     case BP_MENU_ABOUT: go(BP_PAGE_ABOUT); break;
+                    case BP_MENU_BACK: go(BP_PAGE_PLAYER); break;
                     default: break;
                 }
             }
@@ -394,7 +398,7 @@ static void handle_input(const input_event_t *in) {
             if (ok && lng) go(BP_PAGE_SETTINGS);
             else if ((up || down) && click) ui_move(up ? -1 : 1);
             else if (ok && click) {
-                set_skin(bp_ui_selected() == 1 ? BP_SKIN_REEL : BP_SKIN_CLASSIC);
+                set_skin((bp_skin_t)bp_ui_selected());
                 go(BP_PAGE_SKIN);   // 刷新“使用中”标记
             }
             break;

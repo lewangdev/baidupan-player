@@ -76,8 +76,14 @@ typedef enum {
 // 播放界面皮肤。
 typedef enum {
     BP_SKIN_CLASSIC = 0,
-    BP_SKIN_REEL,
+    BP_SKIN_REEL,        // 磁带(以下均为磁带界面的变体,只换盘面与底色)
+    BP_SKIN_BLUEY,       // 磁带 · 蓝色与橙色小狗盘面
+    BP_SKIN_PEPPA,       // 磁带 · 粉色小猪盘面
+    BP_SKIN_COUNT,
 } bp_skin_t;
+
+static inline bool bp_skin_is_tape(int skin) { return skin != BP_SKIN_CLASSIC; }
+extern const char *const BP_SKIN_NAMES[BP_SKIN_COUNT];
 
 // 设置菜单各项(顺序即显示顺序)。
 typedef enum {
@@ -88,6 +94,7 @@ typedef enum {
     BP_MENU_WIFI,
     BP_MENU_ACCOUNT,
     BP_MENU_ABOUT,
+    BP_MENU_BACK,        // 返回播放页(同长按 OK)
     BP_MENU_COUNT,
 } bp_menu_t;
 
