@@ -22,6 +22,7 @@ CONFIG_LV_COLOR_DEPTH_16=y
 # 20 ms display refresh period targets up to 50 FPS when rendering and SPI
 # transfer complete within the same budget.
 CONFIG_LV_DEF_REFR_PERIOD=20
+CONFIG_LV_FONT_MONTSERRAT_10=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y

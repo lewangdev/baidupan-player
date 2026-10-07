@@ -5,13 +5,17 @@
 //   BAIDU AUTH / BAIDU STATUS / BAIDU LOGOUT
 //   STATE                        当前页面、网络、授权、播放状态
 //   LIST                         打印当前列表页(目录/文件、游标)
+//   HEAP                         空闲堆 / 最大连续块 / 历史最低
+//   STOP                         停止播放
 //   KEY UP|OK|DOWN [CLICK|LONG|DOUBLE]  模拟按键(无手环境验收)
-//   UI <n>                       跳到第 n 页(0 首页 1 列表 2 播放 3 授权 4 设置 5 网络 6 账号 7 关于 8 配网热点 9 亮度)
+//   UI <n>                       跳到第 n 页(0 播放 1 列表 2 授权 3 设置 4 网络 5 账号 6 关于 7 配网热点 8 亮度 9 播放界面)
 // 不打印密码与令牌。
 #include "bp_app.h"
 
 #include "bsp_display.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -139,6 +143,13 @@ static void console_task(void *arg) {
             cmd_state();
         } else if (!strcmp(up, "LIST")) {
             cmd_list();
+        } else if (!strcmp(up, "HEAP")) {
+            printf("HEAP: free=%u largest=%u min=%u\r\n", (unsigned)esp_get_free_heap_size(),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                   (unsigned)esp_get_minimum_free_heap_size());
+        } else if (!strcmp(up, "STOP")) {
+            bp_player_stop();
+            printf("STOP: ok\r\n");
         } else if (!strncmp(up, "KEY ", 4)) {
             char button[12] = "", event[12] = "CLICK";
             int n = sscanf(up + 4, "%11s %11s", button, event);

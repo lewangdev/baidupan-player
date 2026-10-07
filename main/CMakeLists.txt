@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS "main.c"
          "bp_ui.c"
+         "bp_ui_reel.c"
          "bp_baidu.c"
          "bp_keys.c"
          "bp_player.c"
@@ -15,6 +16,8 @@ idf_component_register(
 target_sources(${COMPONENT_LIB} PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/bp_font_16.c"
     "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/bp_font_24.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../assets/images/bp_reel_disc.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../assets/images/bp_fish.c"
 )
 
 # 百度应用凭据:构建时从被 Git 忽略的 bp_baidu_keys.h 生成编码后的 bp_keys_obf.h,

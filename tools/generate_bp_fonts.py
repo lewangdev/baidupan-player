@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets/fonts"
 FONT = ASSETS / "SourceHanSansSC-Regular.otf"
-SOURCES = ("bp_ui.c", "main.c", "bp_baidu.c", "bp_player.c")
+SOURCES = ("bp_ui.c", "bp_ui_reel.c", "main.c", "bp_baidu.c", "bp_player.c")
 NON_ASCII = re.compile(r"[^\x00-\x7f]")
 
 

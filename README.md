@@ -52,11 +52,17 @@
 
 | Screen | Up / Down | OK | Long OK | Long Up / Down |
 | --- | --- | --- | --- | --- |
-| Home | Select | Open | Return to player | Long Down: screen off |
-| List | Select | Open folder / play / page | Parent / home | Move 5 rows |
-| Player | Volume ±10 | Pause / resume; double-click: stop (OK again replays) | Back | Previous / next track |
-| Wi-Fi | — | Start setup hotspot | Back | — |
-| Brightness | Level 1–5 (applies and saves immediately) | Back | Back | — |
+| Player (start screen) | Volume ±10 | Play / pause (opens *All audio* if nothing is loaded) | Open Settings | Previous / next track |
+| Settings menu | Select | Open | Back to the player | — |
+| List | Select | Open folder / play / page | Parent folder / Settings | Move 5 rows |
+| Player skin | Classic or Tape | Apply (saved) | Back to Settings | — |
+| Brightness | Level 1–5 (default 3, saved) | — | Back to Settings | — |
+| Wi-Fi | — | Start setup hotspot | Back to Settings | — |
+
+The Settings menu holds *All audio*, *Browse*, *Player skin*, *Brightness*, *Wi-Fi*, *Netdisk account* and
+*About*. The **Tape** skin shows two spinning reels (the emptier reel spins faster), black and white
+waveforms on the tape, and a fish cut in two whose swaying head and tail are joined by live
+sound-wave bars; the **Classic** skin is the progress ring.
 
 ## Supported audio
 
@@ -87,7 +93,8 @@ control task ─► fetch task (HTTPS, 302, Range resume) ─► 20 KB stream bu
 | --- | --- |
 | [`main/bp_baidu.c`](main/bp_baidu.c) | Device-code authorization, locked single-use token refresh, folder and audio lists, download links |
 | [`main/bp_player.c`](main/bp_player.c) | Streaming pipeline, playlist, auto-advance, per-stage heap logging |
-| [`main/bp_ui.c`](main/bp_ui.c) | LVGL pages, created once at boot and switched by visibility |
+| [`main/bp_ui.c`](main/bp_ui.c) | LVGL pages: player, list and settings stay resident; rarely used pages are built on entry and freed on exit |
+| [`main/bp_ui_reel.c`](main/bp_ui_reel.c) | Tape skin: pre-rendered reel and fish frames in flash, waveforms driven by the live audio level |
 | [`main/bp_wifi.cc`](main/bp_wifi.cc) | Station reconnect and SoftAP captive-portal provisioning |
 | [`main/bp_media.c`](main/bp_media.c) | Pure logic with host tests: formats, content sniffing, MP3 frame checks, ID3v2, WAV headers, paths |
 | [`main/bp_mp4.c`](main/bp_mp4.c) | Streaming M4A header parser; mdat is then decoded as consecutive raw AAC blocks without a frame-size table |

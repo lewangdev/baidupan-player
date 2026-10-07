@@ -1,17 +1,18 @@
 // main/main.c —— 百度网盘随身听入口:初始化、按键分发、页面状态机、空闲熄屏、心跳。
 //
-// 按键(三键:上 / OK / 下):
-//   首页      上/下=选择  OK=进入  长按OK=回到播放页  长按下=熄屏
-//   列表      上/下=选择(长按 ±5)  OK=打开文件夹/播放/翻页  长按OK=上一级/首页
-//   播放页    OK=暂停/继续(已停止时重播本曲)  双击OK=停止  上/下=音量
-//             长按上/下=上一首/下一首  长按OK=返回
-//   设置/信息 上/下=选择  OK=进入/执行  长按OK=返回
-//   无线网络  OK=开启配网热点(手机连热点后网页配网)  长按OK=返回
-//   屏幕亮度  上/下=调节 5 档(立即生效并保存)  OK/长按OK=返回
+// 按键(三键:上 / OK / 下)。开机进入播放界面,没有首页:
+//   播放页    OK=播放/暂停(还没有曲目时打开“全部音频”)  长按OK=进入设置
+//             上/下=音量  长按上/下=上一首/下一首
+//   设置菜单  上/下=选择  OK=进入  长按OK=回到播放页
+//             (全部音频 / 浏览网盘 / 播放界面 / 屏幕亮度 / 无线网络 / 网盘账号 / 关于与按键)
+//   列表      上/下=选择(长按 ±5)  OK=打开文件夹/播放/翻页  长按OK=上一级/设置
+//   播放界面  上/下=经典或磁带  OK=应用(保存)  长按OK=返回设置
+//   屏幕亮度  上/下=调节 5 档(立即生效并保存,默认 3)  长按OK=返回设置
+//   无线网络  OK=开启配网热点  长按OK=返回设置
 //   配网热点  长按OK=关闭热点并返回(网页配网完成后自动关闭)
 //
 // 设置向导:首次开机进入配网热点(第 1 步);联网后若未绑定网盘,自动进入扫码绑定
-// (第 2 步);绑定成功直接打开“全部音频”。只在首页/网络/配网页时自动跳转,
+// (第 2 步);绑定成功直接打开“全部音频”。只在播放/网络/配网/绑定页时自动跳转,
 // 用户在绑定页长按 OK 退出后,本次开机不再自动弹出。
 //   熄屏时任意键唤醒(该次按键不触发操作)
 #include "bp_app.h"
@@ -47,7 +48,6 @@ static QueueHandle_t s_input_queue;
 static volatile bool s_input_ready;
 static uint32_t s_last_activity_ms;
 static int s_wake_button = -1;
-static bp_page_t s_player_back = BP_PAGE_HOME;
 static bool s_logout_armed;
 static bool s_auth_declined;   // 用户主动退出过绑定页,本次开机不再自动弹出
 
@@ -74,14 +74,28 @@ static void screen_off(bool off) {
     apply_backlight();
 }
 
-static void load_brightness(void) {
-    uint8_t level = BP_BRIGHTNESS_LEVELS;
+#define DEFAULT_BRIGHTNESS 3
+
+// 界面设置(亮度档位、播放界面皮肤)保存在 NVS 的 bp_ui 命名空间。
+static void load_ui_prefs(void) {
+    uint8_t level = DEFAULT_BRIGHTNESS, skin = BP_SKIN_REEL;
     nvs_handle_t h;
     if (nvs_open("bp_ui", NVS_READONLY, &h) == ESP_OK) {
         nvs_get_u8(h, "bri", &level);
+        nvs_get_u8(h, "skin", &skin);
         nvs_close(h);
     }
     g_bp.brightness = (uint8_t)bp_brightness_step(level, 0);
+    g_bp.skin = skin == BP_SKIN_CLASSIC ? BP_SKIN_CLASSIC : BP_SKIN_REEL;
+}
+
+static void save_ui_pref(const char *key, uint8_t value) {
+    nvs_handle_t h;
+    if (nvs_open("bp_ui", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, key, value);
+        nvs_commit(h);
+        nvs_close(h);
+    }
 }
 
 static void set_brightness(int level) {
@@ -89,12 +103,19 @@ static void set_brightness(int level) {
     if (level == g_bp.brightness) return;
     g_bp.brightness = (uint8_t)level;
     apply_backlight();
-    nvs_handle_t h;
-    if (nvs_open("bp_ui", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, "bri", (uint8_t)level);
-        nvs_commit(h);
-        nvs_close(h);
+    save_ui_pref("bri", (uint8_t)level);
+}
+
+static void set_skin(bp_skin_t skin) {
+    if (skin != g_bp.skin) {
+        g_bp.skin = (uint8_t)skin;
+        save_ui_pref("skin", (uint8_t)skin);
     }
+    if (bsp_lvgl_lock(500)) {
+        bp_ui_apply_skin();
+        bsp_lvgl_unlock();
+    }
+    bp_ui_toast(skin == BP_SKIN_REEL ? "已切换为磁带界面" : "已切换为经典界面");
 }
 
 static void on_wifi_event(int evt, const char *data) {
@@ -203,7 +224,6 @@ static void list_activate(void) {
             } else if (f->format == BP_FMT_UNKNOWN) {
                 bp_ui_toast("暂不支持此格式");
             } else if (bp_player_play_list(list, fi) == 0) {
-                s_player_back = BP_PAGE_LIST;
                 go(BP_PAGE_PLAYER);
             }
             break;
@@ -222,7 +242,7 @@ static void list_back(void) {
     if (list->req.source == BP_SRC_DIR && bp_path_parent(list->req.dir, parent, sizeof(parent)))
         open_list(BP_SRC_DIR, parent);
     else
-        go(BP_PAGE_HOME);
+        go(BP_PAGE_SETTINGS);
     free(list);
 }
 
@@ -233,16 +253,16 @@ static void set_onboarding(bool on) {
     }
 }
 
-// 联网:未绑定网盘就进入第 2 步扫码绑定;已绑定则从配网相关页面回到首页。
+// 联网:未绑定网盘就进入第 2 步扫码绑定;已绑定则从配网相关页面回到播放界面。
 static void on_wifi_up(void) {
     bp_page_t page = bp_ui_page();
-    bool setup_page = page == BP_PAGE_HOME || page == BP_PAGE_WIFI ||
+    bool setup_page = page == BP_PAGE_PLAYER || page == BP_PAGE_WIFI ||
                       page == BP_PAGE_WIFI_AP || page == BP_PAGE_AUTH;
     if (bp_baidu_state() == BP_BD_READY) {
         if (page == BP_PAGE_WIFI || page == BP_PAGE_WIFI_AP) {
             set_onboarding(false);
             bp_ui_toast("网络已连接");
-            go(BP_PAGE_HOME);
+            go(BP_PAGE_PLAYER);
         }
         return;
     }
@@ -286,8 +306,7 @@ static void handle_input(const input_event_t *in) {
         if (in->event == BSP_BTN_PRESS) s_wake_button = (int)in->btn;
         return;
     }
-    if (in->event == BSP_BTN_PRESS) return;
-    bool dbl = in->event == BSP_BTN_DOUBLE;
+    if (in->event == BSP_BTN_PRESS || in->event == BSP_BTN_DOUBLE) return;
 
     bool click = in->event == BSP_BTN_CLICK;
     bool lng = in->event == BSP_BTN_LONG;
@@ -295,25 +314,6 @@ static void handle_input(const input_event_t *in) {
     bp_page_t page = bp_ui_page();
 
     switch (page) {
-        case BP_PAGE_HOME:
-            if ((up || down) && click) ui_move(up ? -1 : 1);
-            else if (down && lng) screen_off(true);
-            else if (ok && lng) {
-                bp_player_info_t pi;
-                bp_player_get_info(&pi);
-                if (pi.name[0]) {
-                    s_player_back = BP_PAGE_HOME;
-                    go(BP_PAGE_PLAYER);
-                } else {
-                    bp_ui_toast("还没有播放的歌曲");
-                }
-            } else if (ok && click) {
-                int sel = bp_ui_selected();
-                if (sel == 2) go(BP_PAGE_SETTINGS);
-                else if (require_auth()) open_list(sel == 0 ? BP_SRC_ALL_AUDIO : BP_SRC_DIR, "/");
-            }
-            break;
-
         case BP_PAGE_LIST:
             if ((up || down) && click) ui_move(up ? -1 : 1);
             else if ((up || down) && lng) ui_move(up ? -5 : 5);
@@ -322,17 +322,35 @@ static void handle_input(const input_event_t *in) {
             break;
 
         case BP_PAGE_PLAYER:
-            if (ok && dbl) {
-                if (bp_player_active()) {
-                    bp_player_stop();
-                    bp_ui_toast("已停止播放");
+            if (ok && click) {
+                bp_player_info_t pi;
+                bp_player_get_info(&pi);
+                // 还没有选过曲目:直接打开“全部音频”。
+                if (!pi.name[0]) {
+                    if (require_auth()) open_list(BP_SRC_ALL_AUDIO, "/");
+                } else {
+                    bp_player_toggle_pause();
                 }
-            } else if (ok && click) bp_player_toggle_pause();
-            else if (ok && lng) go(s_player_back);
-            else if ((up || down) && click)
+            } else if (ok && lng) {
+                if (bsp_lvgl_lock(500)) {
+                    bp_ui_set_selected(BP_PAGE_SETTINGS, 0);
+                    bp_ui_goto(BP_PAGE_SETTINGS);
+                    bsp_lvgl_unlock();
+                }
+            } else if ((up || down) && click) {
                 bp_player_set_volume((uint8_t)bp_volume_step(g_bp.volume, up ? 10 : -10));
-            else if (up && lng) bp_player_prev();
-            else if (down && lng) bp_player_next();
+                if (bsp_lvgl_lock(500)) {
+                    bp_ui_volume_feedback();
+                    bsp_lvgl_unlock();
+                }
+            } else if ((up || down) && lng) {
+                if (bsp_lvgl_lock(500)) {
+                    bp_ui_reel_kick(up ? -1 : 1);
+                    bsp_lvgl_unlock();
+                }
+                if (up) bp_player_prev();
+                else bp_player_next();
+            }
             break;
 
         case BP_PAGE_AUTH:
@@ -340,21 +358,44 @@ static void handle_input(const input_event_t *in) {
                 bp_baidu_auth_cancel();
                 s_auth_declined = true;
                 set_onboarding(false);
-                go(BP_PAGE_HOME);
+                go(BP_PAGE_PLAYER);
             }
             break;
 
         case BP_PAGE_SETTINGS:
             if ((up || down) && click) ui_move(up ? -1 : 1);
-            else if (ok && lng) go(BP_PAGE_HOME);
+            else if (ok && lng) go(BP_PAGE_PLAYER);
             else if (ok && click) {
-                static const bp_page_t targets[] = {BP_PAGE_WIFI, BP_PAGE_ACCOUNT,
-                                                    BP_PAGE_BRIGHTNESS, BP_PAGE_ABOUT};
-                int sel = bp_ui_selected();
-                if (sel >= 0 && sel < (int)(sizeof(targets) / sizeof(targets[0]))) {
-                    s_logout_armed = false;
-                    go(targets[sel]);
+                s_logout_armed = false;
+                switch ((bp_menu_t)bp_ui_selected()) {
+                    case BP_MENU_ALL_AUDIO:
+                        if (require_auth()) open_list(BP_SRC_ALL_AUDIO, "/");
+                        break;
+                    case BP_MENU_BROWSE:
+                        if (require_auth()) open_list(BP_SRC_DIR, "/");
+                        break;
+                    case BP_MENU_SKIN:
+                        if (bsp_lvgl_lock(500)) {
+                            bp_ui_set_selected(BP_PAGE_SKIN, g_bp.skin == BP_SKIN_REEL ? 1 : 0);
+                            bp_ui_goto(BP_PAGE_SKIN);
+                            bsp_lvgl_unlock();
+                        }
+                        break;
+                    case BP_MENU_BRIGHTNESS: go(BP_PAGE_BRIGHTNESS); break;
+                    case BP_MENU_WIFI: go(BP_PAGE_WIFI); break;
+                    case BP_MENU_ACCOUNT: go(BP_PAGE_ACCOUNT); break;
+                    case BP_MENU_ABOUT: go(BP_PAGE_ABOUT); break;
+                    default: break;
                 }
+            }
+            break;
+
+        case BP_PAGE_SKIN:
+            if (ok && lng) go(BP_PAGE_SETTINGS);
+            else if ((up || down) && click) ui_move(up ? -1 : 1);
+            else if (ok && click) {
+                set_skin(bp_ui_selected() == 1 ? BP_SKIN_REEL : BP_SKIN_CLASSIC);
+                go(BP_PAGE_SKIN);   // 刷新“使用中”标记
             }
             break;
 
@@ -395,7 +436,7 @@ static void handle_input(const input_event_t *in) {
             break;
 
         case BP_PAGE_BRIGHTNESS:
-            if (ok && (lng || click)) {
+            if (ok && lng) {
                 go(BP_PAGE_SETTINGS);
             } else if ((up || down) && click) {
                 set_brightness(bp_brightness_step(g_bp.brightness, up ? 1 : -1));
@@ -471,12 +512,12 @@ void app_main(void) {
     bsp_battery_init();
     bp_baidu_init();
     bp_player_init();
+    load_ui_prefs();   // 皮肤与亮度要在界面创建前确定
 
     if (bsp_lvgl_lock(1000)) {
         bp_ui_init();
         bsp_lvgl_unlock();
     }
-    load_brightness();
     apply_backlight();
     s_last_activity_ms = now_ms();
 

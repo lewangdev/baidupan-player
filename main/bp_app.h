@@ -20,6 +20,7 @@
 #define BP_NAME_MAX 96
 #define BP_PAGE_SIZE 12       // 每次向网盘请求的条目数(受 JSON 内存预算约束)
 #define BP_PLAYLIST_MAX BP_PAGE_SIZE
+#define BP_FOLDER_MAX 32
 
 typedef struct {
     uint64_t fs_id;
@@ -27,6 +28,7 @@ typedef struct {
     bool is_dir;
     uint8_t format;          // bp_format_t,按完整文件名判断(name 可能被缩短)
     char name[BP_NAME_MAX];  // 显示用;超长时缩短为“前半…扩展名”
+    char folder[BP_FOLDER_MAX]; // 所在文件夹名(磁带界面第二行显示)
 } bp_file_t;
 
 // 列表来源:目录浏览,或网盘内全部 MP3/WAV(按修改时间倒序)。
@@ -56,10 +58,10 @@ typedef struct {
     bp_file_t files[BP_PAGE_SIZE];
 } bp_list_t;
 
+// 开机即进入播放界面;长按 OK 打开设置菜单(全部音频、浏览网盘等都在菜单里)。
 typedef enum {
-    BP_PAGE_HOME = 0,
+    BP_PAGE_PLAYER = 0,
     BP_PAGE_LIST,
-    BP_PAGE_PLAYER,
     BP_PAGE_AUTH,
     BP_PAGE_SETTINGS,
     BP_PAGE_WIFI,
@@ -67,8 +69,29 @@ typedef enum {
     BP_PAGE_ABOUT,
     BP_PAGE_WIFI_AP,      // SoftAP 网页配网
     BP_PAGE_BRIGHTNESS,   // 屏幕亮度(5 档)
+    BP_PAGE_SKIN,         // 播放界面选择(经典 / 磁带)
     BP_PAGE_COUNT,
 } bp_page_t;
+
+// 播放界面皮肤。
+typedef enum {
+    BP_SKIN_CLASSIC = 0,
+    BP_SKIN_REEL,
+} bp_skin_t;
+
+// 设置菜单各项(顺序即显示顺序)。
+typedef enum {
+    BP_MENU_ALL_AUDIO = 0,
+    BP_MENU_BROWSE,
+    BP_MENU_SKIN,
+    BP_MENU_BRIGHTNESS,
+    BP_MENU_WIFI,
+    BP_MENU_ACCOUNT,
+    BP_MENU_ABOUT,
+    BP_MENU_COUNT,
+} bp_menu_t;
+
+
 
 // 网盘授权状态。
 typedef enum {
@@ -97,7 +120,10 @@ typedef struct {
     uint16_t channels;
     uint32_t kbps;
     uint8_t buffer_pct;    // 环形缓冲填充度
+    uint8_t level;         // 实时音量电平 0..100(驱动磁带界面声波幅度)
+    const char *fmt;       // "MP3" / "M4A" / "AAC" / "WAV",未知为 NULL
     const char *error;     // BP_PLAY_ERROR 时的中文原因
+    char folder[BP_FOLDER_MAX];
 } bp_player_info_t;
 
 typedef struct {
@@ -105,6 +131,7 @@ typedef struct {
     volatile bool screen_off;
     volatile uint8_t volume;       // 0..100
     volatile uint8_t brightness;   // 屏幕亮度档位 1..BP_BRIGHTNESS_LEVELS
+    volatile uint8_t skin;         // bp_skin_t
 } bp_state_t;
 
 extern bp_state_t g_bp;
@@ -123,7 +150,11 @@ void bp_ui_goto(bp_page_t page);
 bp_page_t bp_ui_page(void);
 void bp_ui_toast(const char *text);             // 任意任务可调用(内部只拷贝)
 void bp_ui_move(int delta);                     // 当前页选中项移动
-int  bp_ui_selected(void);                      // 首页/设置页选中项
+int  bp_ui_selected(void);                      // 设置菜单 / 皮肤选择页的选中项
+void bp_ui_set_selected(bp_page_t page, int sel);
+void bp_ui_apply_skin(void);                    // g_bp.skin 变化后切换播放界面
+void bp_ui_reel_kick(int dir);                  // 磁带界面:长按切歌时转轮快进(+1)/倒带(-1)
+void bp_ui_volume_feedback(void);               // 音量变化的界面反馈
 bp_row_kind_t bp_ui_list_row(int *file_index);  // 列表页选中行
 void bp_ui_list_reset_sel(void);
 void bp_ui_account_arm(bool armed);             // 账号页“再按一次确认退出”

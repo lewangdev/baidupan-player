@@ -381,7 +381,25 @@ static bool memory_allows_request(void) {
 
 // 把一批原始条目中可显示的追加到 out。返回本批实际消费的原始条目数:
 // out 已满时停在第一个放不下的可显示条目上,下一页从这里继续。
-static int append_entries(const cJSON *list, bp_list_t *out, bool *stopped) {
+// 取 path 的上一级目录名(“/音乐/儿歌/a.mp3” → “儿歌”),根目录记作“我的网盘”。
+static void parent_folder(const char *path, char *out, size_t cap) {
+    const char *last = path ? strrchr(path, '/') : NULL;
+    if (!last || last == path) {
+        bp_name_shorten("我的网盘", out, cap);
+        return;
+    }
+    const char *start = last - 1;
+    while (start > path && *start != '/') start--;
+    if (*start == '/') start++;
+    char seg[BP_PATH_MAX];
+    size_t n = (size_t)(last - start);
+    if (n >= sizeof(seg)) n = sizeof(seg) - 1;
+    memcpy(seg, start, n);
+    seg[n] = 0;
+    bp_name_shorten(seg, out, cap);
+}
+
+static int append_entries(const cJSON *list, bp_list_t *out, bool *stopped, const char *folder) {
     int n = cJSON_GetArraySize(list);
     *stopped = false;
     for (int i = 0; i < n; i++) {
@@ -406,6 +424,11 @@ static int append_entries(const cJSON *list, bp_list_t *out, bool *stopped) {
         // 格式按完整文件名判断;显示名超长时缩短为“前半…扩展名”,不切断中文字符。
         f->format = is_dir ? BP_FMT_UNKNOWN : (uint8_t)bp_media_format(name->valuestring);
         bp_name_shorten(name->valuestring, f->name, sizeof(f->name));
+        // “全部音频”跨目录:按各自 path 取文件夹名;浏览目录时就是当前目录。
+        const cJSON *path = cJSON_GetObjectItem(e, "path");
+        if (folder) bp_name_shorten(folder, f->folder, sizeof(f->folder));
+        else parent_folder(cJSON_IsString(path) ? path->valuestring : NULL, f->folder,
+                           sizeof(f->folder));
     }
     return n;
 }
@@ -448,7 +471,9 @@ static int fetch_chunk(const bp_list_req_t *req, uint32_t cursor, bp_list_t *out
             const cJSON *list = cJSON_GetObjectItem(root, "list");
             int raw = cJSON_IsArray(list) ? cJSON_GetArraySize(list) : 0;
             bool stopped = false;
-            *consumed = raw ? (uint32_t)append_entries(list, out, &stopped) : 0;
+            const char *folder = req->source == BP_SRC_DIR ?
+                (strcmp(req->dir, "/") ? bp_path_basename(req->dir) : "我的网盘") : NULL;
+            *consumed = raw ? (uint32_t)append_entries(list, out, &stopped, folder) : 0;
             const cJSON *more = cJSON_GetObjectItem(root, "has_more");
             bool chunk_more = cJSON_IsNumber(more) ? more->valueint != 0 : raw >= BP_PAGE_SIZE;
             *api_more = stopped || chunk_more;

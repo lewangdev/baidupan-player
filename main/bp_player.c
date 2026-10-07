@@ -345,6 +345,9 @@ static bool discard(inbuf_t *b, size_t n) {
 
 static void wait_while_paused(void) {
     if (!s_paused) return;
+    portENTER_CRITICAL(&s_mux);
+    s_info.level = 0;
+    portEXIT_CRITICAL(&s_mux);
     set_state(BP_PLAY_PAUSED, NULL);
     while (s_paused && !s_abort) {
         update_buffer_pct();
@@ -360,6 +363,17 @@ static bool open_codec(uint32_t rate) {
     }
     bsp_audio_set_volume(g_bp.volume);
     return true;
+}
+
+// 实时电平:对已下混的单声道 PCM 抽样求平均幅度,上升快、回落慢,驱动界面声波。
+static void publish_level(const int16_t *pcm, size_t n) {
+    uint32_t acc = 0, cnt = 0;
+    for (size_t i = 0; i < n; i += 8, cnt++) acc += (uint32_t)(pcm[i] < 0 ? -pcm[i] : pcm[i]);
+    uint32_t lv = cnt ? acc / cnt * 100 / 6000 : 0;
+    if (lv > 100) lv = 100;
+    portENTER_CRITICAL(&s_mux);
+    s_info.level = (uint8_t)(lv > s_info.level ? lv : (s_info.level * 7u + lv) / 8u);
+    portEXIT_CRITICAL(&s_mux);
 }
 
 static void publish_progress(uint64_t frames, uint32_t rate, uint32_t total_ms) {
@@ -450,6 +464,7 @@ static const char *play_mp3(inbuf_t *b, uint64_t file_size, size_t id3) {
         }
         size_t frames = (size_t)fi.outputSamps / (size_t)fi.nChans;
         if (fi.nChans == 2) bp_downmix_s16(pcm, frames);
+        publish_level(pcm, frames);
         if (bsp_audio_write(pcm, frames * sizeof(int16_t)) != ESP_OK) {
             error = "音频设备异常";
             break;
@@ -524,6 +539,7 @@ static const char *play_wav(inbuf_t *b, uint64_t file_size, const bp_wav_info_t 
         size_t frames = usable / align;
         // in 缓冲起点 4 字节对齐,pos 按 align 递进;data_offset 为偶数,满足 int16 对齐。
         if (wav.channels == 2) bp_downmix_s16(pcm, frames);
+        publish_level(pcm, frames);
         if (bsp_audio_write(pcm, frames * sizeof(int16_t)) != ESP_OK) return "音频设备异常";
         b->pos += usable;
         played += usable;
@@ -560,6 +576,7 @@ static const char *aac_output(HAACDecoder dec, int16_t *pcm, uint64_t *frames_ou
     }
     size_t frames = (size_t)fi.outputSamps / (size_t)fi.nChans;
     if (fi.nChans == 2) bp_downmix_s16(pcm, frames);
+    publish_level(pcm, frames);
     if (bsp_audio_write(pcm, frames * sizeof(int16_t)) != ESP_OK) return "音频设备异常";
     *frames_out += frames;
     publish_progress(*frames_out, *rate, total_ms);
@@ -770,6 +787,10 @@ static void decode_task(void *arg) {
         // 按内容识别格式:网盘里常有 M4A 等文件被命名为 .mp3,硬当 MP3 解会误判帧头而卡顿。
         bp_sniff_t kind = bp_media_sniff(b.in, b.len);
         ESP_LOGI(TAG, "content sniff=%d", kind);
+        static const char *const FMT[] = {NULL, "MP3", "WAV", "M4A", "AAC", "FLAC", "OGG"};
+        portENTER_CRITICAL(&s_mux);
+        s_info.fmt = (size_t)kind < sizeof(FMT) / sizeof(FMT[0]) ? FMT[kind] : NULL;
+        portEXIT_CRITICAL(&s_mux);
         if (kind == BP_SNIFF_WAV) {
             error = play_wav(&b, t->size, NULL, 0);
         } else if (kind == BP_SNIFF_MP4) {
@@ -848,6 +869,7 @@ static void start_track_at(int index, bool resume) {
     if (!resume) {
         memset(&s_info, 0, sizeof(s_info));
         strlcpy(s_info.name, f->name, sizeof(s_info.name));
+        strlcpy(s_info.folder, f->folder, sizeof(s_info.folder));
         s_info.index = index;
         s_info.count = s_pl_count;
     }

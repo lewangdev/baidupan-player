@@ -1,14 +1,20 @@
 // main/bp_ui.c —— 百度网盘随身听界面(240x320 竖屏,圆角屏)。
 //
-// 所有页面在 bp_ui_init 一次建好,切页只切换 HIDDEN,不反复创建/删除对象,
-// 避免堆碎片。状态栏与提示条放在 lv_layer_top(),各页共用。
+// 常用页面(播放、列表、设置)在 bp_ui_init 建好,切页只切换 HIDDEN;不常用的页面
+// (绑定、配网、无线网络、账号、亮度、关于、播放界面选择)进入时创建、离开时删除,
+// 播放页也只建当前皮肤 —— 界面全部常驻约 49 KB,会挤掉播放时解码器需要的内存。
+// 状态栏与提示条放在 lv_layer_top(),各页共用。
 // 动态内容由 200 ms 的 lv_timer 刷新(运行在 LVGL 任务内,已持有锁)。
 // 中文用 bp_font_16(GB2312 全集,显示任意网盘文件名)与 bp_font_24(界面固定文字子集);
 // 图标用 Montserrat 内置符号,中文字体里没有这些码位。
 #include "bp_app.h"
+#include "bp_ui_reel.h"
 
 #include "bsp_battery.h"
 #include "bsp_display.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "lvgl.h"
@@ -32,12 +38,12 @@ LV_FONT_DECLARE(bp_font_24);
 #define LIST_ROWS 7
 #define LIST_ROW_H 32
 #define LIST_TOP 70
-#define HOME_ITEMS 3
-#define SETTINGS_ITEMS 4
+#define MENU_ROWS 5          // 设置菜单一屏显示的行数
 #define TOAST_MS 2200
+#define ANIM_MS 50           // 磁带界面动画周期
 
 static lv_obj_t *s_pages[BP_PAGE_COUNT];
-static bp_page_t s_page = BP_PAGE_HOME;
+static bp_page_t s_page = BP_PAGE_PLAYER;
 static int s_sel[BP_PAGE_COUNT];
 
 // 顶层
@@ -47,9 +53,6 @@ static char s_toast_text[64];
 static bool s_toast_pending;
 static int64_t s_toast_until;
 
-// 首页
-static lv_obj_t *s_home_card_title, *s_home_card_name, *s_home_card_bar, *s_home_card_icon;
-static lv_obj_t *s_home_items[HOME_ITEMS], *s_home_icons[HOME_ITEMS], *s_home_texts[HOME_ITEMS];
 
 // 列表页
 static lv_obj_t *s_list_title, *s_list_sub, *s_list_msg;
@@ -57,7 +60,11 @@ static lv_obj_t *s_rows[LIST_ROWS], *s_row_icons[LIST_ROWS], *s_row_texts[LIST_R
 static bp_list_t s_list;     // 最近一次快照
 static int s_list_rows;      // 虚拟行数(文件 + 上/下一页)
 
-// 播放页
+// 播放页:经典与磁带两套界面放在同一页里,按 g_bp.skin 显示其一。
+static lv_obj_t *s_pl_classic, *s_pl_reel;
+static int64_t s_anim_last;
+static int s_built_skin = -1;
+static bool s_onboarding;
 static lv_obj_t *s_arc, *s_pl_time, *s_pl_total, *s_pl_state, *s_pl_name, *s_pl_meta;
 static lv_obj_t *s_pl_vol_bar, *s_pl_icon;
 
@@ -66,7 +73,11 @@ static lv_obj_t *s_auth_qr_box, *s_auth_qr, *s_auth_code, *s_auth_hint, *s_auth_
 static char s_auth_shown[96];
 
 // 设置/信息页
-static lv_obj_t *s_set_items[SETTINGS_ITEMS], *s_set_icons[SETTINGS_ITEMS], *s_set_texts[SETTINGS_ITEMS];
+static lv_obj_t *s_set_items[MENU_ROWS], *s_set_icons[MENU_ROWS], *s_set_texts[MENU_ROWS];
+static lv_obj_t *s_set_vals[MENU_ROWS], *s_set_thumb;
+
+// 播放界面选择页
+static lv_obj_t *s_skin_card[2], *s_skin_tag[2];
 static lv_obj_t *s_wifi_info, *s_wifi_action, *s_acct_state, *s_acct_action, *s_acct_hint;
 static bool s_acct_armed;
 
@@ -96,6 +107,12 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, 
     lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
     lv_label_set_text(l, text);
     return l;
+}
+
+// 单行显示:DOTS 模式只有在高度固定为一行时才不换行,过长部分以省略号结尾。
+static void one_line(lv_obj_t *l, int32_t w) {
+    lv_obj_set_size(l, w, lv_font_get_line_height(lv_obj_get_style_text_font(l, 0)));
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
 }
 
 static void set_text_if(lv_obj_t *l, const char *text) {
@@ -156,45 +173,18 @@ static void build_top_layer(void) {
     lv_obj_set_style_border_color(s_toast, lv_color_hex(COL_ACCENT), 0);
     lv_obj_set_style_border_width(s_toast, 1, 0);
     s_toast_label = label(s_toast, &bp_font_16, COL_TEXT, "");
-    lv_obj_set_width(s_toast_label, 176);
+    one_line(s_toast_label, 176);
     lv_obj_set_style_text_align(s_toast_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(s_toast_label, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_center(s_toast_label);
     lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
-}
-
-static void build_home(void) {
-    lv_obj_t *p = s_pages[BP_PAGE_HOME] = page();
-    page_title(p, "百度网盘随身听");
-
-    lv_obj_t *card = box(p, 20, 74, 200, 82, COL_SURFACE, 16);
-    s_home_card_icon = label(card, &lv_font_montserrat_20, COL_ACCENT, LV_SYMBOL_AUDIO);
-    lv_obj_set_pos(s_home_card_icon, 14, 14);
-    s_home_card_title = label(card, &bp_font_16, COL_MUTED, "未在播放");
-    lv_obj_set_pos(s_home_card_title, 44, 12);
-    s_home_card_name = label(card, &bp_font_16, COL_TEXT, "选一首网盘里的歌吧");
-    lv_obj_set_width(s_home_card_name, 172);
-    lv_label_set_long_mode(s_home_card_name, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-    lv_obj_set_pos(s_home_card_name, 14, 40);
-    s_home_card_bar = lv_bar_create(card);
-    lv_obj_set_size(s_home_card_bar, 172, 4);
-    lv_obj_set_pos(s_home_card_bar, 14, 66);
-    lv_bar_set_range(s_home_card_bar, 0, 1000);
-    lv_obj_set_style_bg_color(s_home_card_bar, lv_color_hex(COL_SURFACE2), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_home_card_bar, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
-
-    static const char *icons[HOME_ITEMS] = {LV_SYMBOL_AUDIO, LV_SYMBOL_DIRECTORY, LV_SYMBOL_SETTINGS};
-    static const char *texts[HOME_ITEMS] = {"全部音频", "浏览网盘", "设置"};
-    for (int i = 0; i < HOME_ITEMS; i++)
-        pill(p, 168 + i * 46, icons[i], texts[i], &s_home_items[i], &s_home_icons[i], &s_home_texts[i]);
 }
 
 static void build_list(void) {
     lv_obj_t *p = s_pages[BP_PAGE_LIST] = page();
     s_list_title = label(p, &bp_font_16, COL_ACCENT, "");
     lv_obj_set_width(s_list_title, 180);
+    lv_label_set_long_mode(s_list_title, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);   // 当前目录名过长时滚动
     lv_obj_set_style_text_align(s_list_title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(s_list_title, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_align(s_list_title, LV_ALIGN_TOP_MID, 0, 30);
     s_list_sub = label(p, &bp_font_16, COL_MUTED, "");
     lv_obj_align(s_list_sub, LV_ALIGN_TOP_MID, 0, 48);
@@ -203,8 +193,7 @@ static void build_list(void) {
         s_row_icons[i] = label(s_rows[i], &lv_font_montserrat_14, COL_MUTED, "");
         lv_obj_align(s_row_icons[i], LV_ALIGN_LEFT_MID, 10, 0);
         s_row_texts[i] = label(s_rows[i], &bp_font_16, COL_TEXT, "");
-        lv_obj_set_width(s_row_texts[i], 176);
-        lv_label_set_long_mode(s_row_texts[i], LV_LABEL_LONG_MODE_DOTS);
+        one_line(s_row_texts[i], 176);
         lv_obj_align(s_row_texts[i], LV_ALIGN_LEFT_MID, 32, 0);
     }
     s_list_msg = label(p, &bp_font_16, COL_MUTED, "");
@@ -214,8 +203,7 @@ static void build_list(void) {
     lv_obj_align(s_list_msg, LV_ALIGN_CENTER, 0, 0);
 }
 
-static void build_player(void) {
-    lv_obj_t *p = s_pages[BP_PAGE_PLAYER] = page();
+static void build_classic(lv_obj_t *p) {
     s_arc = lv_arc_create(p);
     lv_obj_set_size(s_arc, 176, 176);
     lv_obj_align(s_arc, LV_ALIGN_TOP_MID, 0, 34);
@@ -237,9 +225,8 @@ static void build_player(void) {
     s_pl_total = label(s_arc, &lv_font_montserrat_14, COL_MUTED, "/ --:--");
     lv_obj_align(s_pl_total, LV_ALIGN_CENTER, 0, 16);
     s_pl_state = label(s_arc, &bp_font_16, COL_MUTED, "");
-    lv_obj_set_width(s_pl_state, 130);
+    one_line(s_pl_state, 130);
     lv_obj_set_style_text_align(s_pl_state, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(s_pl_state, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_align(s_pl_state, LV_ALIGN_CENTER, 0, 42);
 
     s_pl_name = label(p, &bp_font_16, COL_TEXT, "");
@@ -260,9 +247,15 @@ static void build_player(void) {
     lv_obj_set_style_bg_color(s_pl_vol_bar, lv_color_hex(COL_MUTED), LV_PART_INDICATOR);
 }
 
+static void build_player(void) {
+    lv_obj_t *page_obj = s_pages[BP_PAGE_PLAYER] = page();
+    s_pl_reel = box(page_obj, 0, 0, 240, 320, COL_BG, 0);
+    s_pl_classic = box(page_obj, 0, 0, 240, 320, COL_BG, 0);
+}
+
 static void build_auth(void) {
     lv_obj_t *p = s_pages[BP_PAGE_AUTH] = page();
-    s_auth_title = page_title(p, "连接百度网盘");
+    s_auth_title = page_title(p, s_onboarding ? "第2步 绑定网盘" : "连接百度网盘");
     s_auth_qr_box = box(p, 44, 72, 152, 152, 0xFFFFFF, 12);
     s_auth_qr = lv_qrcode_create(s_auth_qr_box);
     lv_qrcode_set_size(s_auth_qr, 136);
@@ -278,14 +271,79 @@ static void build_auth(void) {
     lv_obj_align(s_auth_hint, LV_ALIGN_TOP_MID, 0, 262);
 }
 
+static const char *const MENU_ICONS[BP_MENU_COUNT] = {
+    LV_SYMBOL_AUDIO, LV_SYMBOL_DIRECTORY, LV_SYMBOL_IMAGE, LV_SYMBOL_EYE_OPEN,
+    LV_SYMBOL_WIFI, LV_SYMBOL_DRIVE, LV_SYMBOL_LIST,
+};
+static const char *const MENU_TEXTS[BP_MENU_COUNT] = {
+    "全部音频", "浏览网盘", "播放界面", "屏幕亮度", "无线网络", "网盘账号", "关于与按键",
+};
+
 static void build_settings(void) {
     lv_obj_t *p = s_pages[BP_PAGE_SETTINGS] = page();
     page_title(p, "设置");
-    static const char *icons[SETTINGS_ITEMS] = {LV_SYMBOL_WIFI, LV_SYMBOL_DRIVE, LV_SYMBOL_EYE_OPEN,
-                                                LV_SYMBOL_LIST};
-    static const char *texts[SETTINGS_ITEMS] = {"无线网络", "网盘账号", "屏幕亮度", "关于与按键"};
-    for (int i = 0; i < SETTINGS_ITEMS; i++)
-        pill(p, 80 + i * 50, icons[i], texts[i], &s_set_items[i], &s_set_icons[i], &s_set_texts[i]);
+    for (int i = 0; i < MENU_ROWS; i++) {
+        pill(p, 72 + i * 46, "", "", &s_set_items[i], &s_set_icons[i], &s_set_texts[i]);
+        s_set_vals[i] = label(s_set_items[i], &bp_font_16, COL_MUTED, "");
+        lv_obj_align(s_set_vals[i], LV_ALIGN_RIGHT_MID, -16, 0);
+    }
+    // 滚动条:7 项只显示 5 项时提示还有更多。
+    lv_obj_t *track = box(p, 227, 74, 3, 222, COL_SURFACE2, 2);
+    s_set_thumb = box(track, 0, 0, 3, 222 * MENU_ROWS / BP_MENU_COUNT, COL_ACCENT, 2);
+
+}
+
+// 播放界面选择:两张卡片,上/下切换,OK 应用。
+static void build_skin(void) {
+    lv_obj_t *p = s_pages[BP_PAGE_SKIN] = page();
+    page_title(p, "播放界面");
+    for (int i = 0; i < 2; i++) {
+        int x = i ? 126 : 22;
+        s_skin_card[i] = box(p, x, 72, 92, 128, i ? 0x20E47C : COL_BG, 14);
+        lv_obj_set_style_border_width(s_skin_card[i], 1, 0);
+        lv_obj_set_style_border_color(s_skin_card[i], lv_color_hex(0x2C3A55), 0);
+        lv_obj_t *name = label(p, &bp_font_16, COL_TEXT, i ? "磁带" : "经典");
+        lv_obj_set_width(name, 92);
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(name, x, 206);
+        s_skin_tag[i] = label(p, &bp_font_16, COL_ACCENT, "");
+        lv_obj_set_width(s_skin_tag[i], 92);
+        lv_obj_set_style_text_align(s_skin_tag[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(s_skin_tag[i], x, 230);
+    }
+    // 经典缩略图:进度环 + 播放三角 + 文本条。
+    lv_obj_t *c = s_skin_card[0];
+    lv_obj_t *ring = lv_arc_create(c);
+    lv_obj_set_size(ring, 52, 52);
+    lv_obj_set_pos(ring, 19, 14);
+    lv_arc_set_rotation(ring, 270);
+    lv_arc_set_bg_angles(ring, 0, 360);
+    lv_arc_set_value(ring, 60);
+    lv_obj_remove_style(ring, NULL, LV_PART_KNOB);
+    lv_obj_remove_flag(ring, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(ring, 4, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(ring, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(ring, lv_color_hex(COL_SURFACE2), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(ring, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
+    lv_obj_t *tri = label(ring, &lv_font_montserrat_14, COL_ACCENT, LV_SYMBOL_PLAY);
+    lv_obj_center(tri);
+    box(c, 20, 84, 50, 5, COL_TEXT, 2);
+    box(c, 28, 95, 34, 4, COL_MUTED, 2);
+    box(c, 24, 108, 42, 3, COL_SURFACE2, 2);
+    // 磁带缩略图:两个水平对齐的转轮 + 走带线 + 封面与文字条。
+    c = s_skin_card[1];
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *reel = box(c, i ? 49 : 8, 20, 32, 32, 0xEFFFF5, LV_RADIUS_CIRCLE);
+        lv_obj_set_style_border_width(reel, 1, 0);
+        lv_obj_set_style_border_color(reel, lv_color_hex(0x092113), 0);
+        box(reel, 11, 11, 10, 10, i ? 0x0A8F4D : 0x092113, LV_RADIUS_CIRCLE);
+    }
+    box(c, 10, 64, 70, 1, 0x092113, 0);
+    box(c, 10, 76, 16, 16, 0x0E3B24, 3);
+    box(c, 32, 78, 44, 5, 0x092113, 2);
+    box(c, 32, 87, 30, 4, 0x092113, 2);
+    lv_obj_t *hint = label(p, &bp_font_16, COL_MUTED, "上/下 选择 · OK 应用");
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 264);
 }
 
 static lv_obj_t *info_label(lv_obj_t *p, int y) {
@@ -297,16 +355,18 @@ static lv_obj_t *info_label(lv_obj_t *p, int y) {
     return l;
 }
 
-static void build_info_pages(void) {
+static void build_wifi(void) {
     lv_obj_t *p = s_pages[BP_PAGE_WIFI] = page();
     page_title(p, "无线网络");
     s_wifi_info = info_label(p, 76);
     lv_obj_t *item, *icon;
     pill(p, 240, LV_SYMBOL_WIFI, "开启配网热点", &item, &icon, &s_wifi_action);
     pill_select(item, icon, s_wifi_action, true);
+}
 
-    p = s_pages[BP_PAGE_WIFI_AP] = page();
-    s_ap_title = page_title(p, "网页配网");
+static void build_wifi_ap(void) {
+    lv_obj_t *p = s_pages[BP_PAGE_WIFI_AP] = page();
+    s_ap_title = page_title(p, s_onboarding ? "第1步 连接网络" : "网页配网");
     lv_obj_t *qr_box = box(p, 60, 70, 120, 120, 0xFFFFFF, 10);
     s_ap_qr = lv_qrcode_create(qr_box);
     lv_qrcode_set_size(s_ap_qr, 108);
@@ -321,17 +381,22 @@ static void build_info_pages(void) {
     lv_label_set_text(s_ap_steps, "1. 手机扫码连接此热点\n"
                                   "2. 在弹出的网页选网络、填密码\n"
                                   "未弹出请访问 192.168.4.1");
+}
 
-    p = s_pages[BP_PAGE_ACCOUNT] = page();
+static void build_account(void) {
+    lv_obj_t *item, *icon;
+    lv_obj_t *p = s_pages[BP_PAGE_ACCOUNT] = page();
     page_title(p, "网盘账号");
     s_acct_state = info_label(p, 80);
     pill(p, 172, LV_SYMBOL_REFRESH, "", &item, &icon, &s_acct_action);
     pill_select(item, icon, s_acct_action, true);
     s_acct_hint = info_label(p, 224);
     lv_obj_set_style_text_color(s_acct_hint, lv_color_hex(COL_MUTED), 0);
+}
 
-    // 亮度:5 根由矮到高的竖条,点亮的根数即档位。
-    p = s_pages[BP_PAGE_BRIGHTNESS] = page();
+// 亮度:5 根由矮到高的竖条,点亮的根数即档位。
+static void build_brightness(void) {
+    lv_obj_t *p = s_pages[BP_PAGE_BRIGHTNESS] = page();
     page_title(p, "屏幕亮度");
     for (int i = 0; i < BP_BRIGHTNESS_LEVELS; i++) {
         int h = 28 + i * 18;
@@ -341,25 +406,26 @@ static void build_info_pages(void) {
     lv_obj_align(s_bri_value, LV_ALIGN_TOP_MID, 0, 222);
     lv_obj_t *bri_hint = label(p, &bp_font_16, COL_MUTED, "上/下 调节 · 长按 OK 返回");
     lv_obj_align(bri_hint, LV_ALIGN_TOP_MID, 0, 266);
+}
 
-    p = s_pages[BP_PAGE_ABOUT] = page();
+static void build_about(void) {
+    lv_obj_t *p = s_pages[BP_PAGE_ABOUT] = page();
     page_title(p, "关于与按键");
     // 两栏:左按键(品牌绿)右说明,每项一行;说明超宽时省略而不换行。
     static const char *keys[][2] = {
-        {"上 / 下", "选择 · 音量"},
-        {"OK", "确认 · 暂停"},
-        {"双击 OK", "停止播放"},
-        {"长按 OK", "返回上一级"},
+        {"OK", "播放 · 暂停"},
+        {"长按 OK", "进入设置"},
+        {"上 / 下", "调节音量"},
         {"长按上/下", "上一首/下一首"},
-        {"首页长按OK", "回到播放页"},
+        {"菜单里 OK", "进入 · 确认"},
+        {"菜单长按OK", "返回上一层"},
     };
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         int y = 72 + (int)i * 28;
         lv_obj_t *k = label(p, &bp_font_16, COL_ACCENT, keys[i][0]);
         lv_obj_set_pos(k, 22, y);
         lv_obj_t *d = label(p, &bp_font_16, COL_TEXT, keys[i][1]);
-        lv_obj_set_width(d, 104);
-        lv_label_set_long_mode(d, LV_LABEL_LONG_MODE_DOTS);
+        one_line(d, 104);
         lv_obj_set_pos(d, 116, y);
     }
     lv_obj_t *formats = label(p, &bp_font_16, COL_MUTED, "支持 MP3 · M4A · AAC · WAV");
@@ -367,6 +433,13 @@ static void build_info_pages(void) {
     lv_obj_t *ver = label(p, &bp_font_16, COL_MUTED, "百度网盘随身听 v" BP_APP_VERSION);
     lv_obj_align(ver, LV_ALIGN_TOP_MID, 0, 270);
 }
+
+typedef void (*page_builder_t)(void);
+static const page_builder_t LAZY_BUILDERS[BP_PAGE_COUNT] = {
+    [BP_PAGE_AUTH] = build_auth, [BP_PAGE_WIFI] = build_wifi, [BP_PAGE_WIFI_AP] = build_wifi_ap,
+    [BP_PAGE_ACCOUNT] = build_account, [BP_PAGE_ABOUT] = build_about,
+    [BP_PAGE_BRIGHTNESS] = build_brightness, [BP_PAGE_SKIN] = build_skin,
+};
 
 // ---- 刷新 -------------------------------------------------------------------------
 static void refresh_status(void) {
@@ -408,21 +481,6 @@ static void refresh_toast(void) {
         lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
         s_toast_until = 0;
     }
-}
-
-static void refresh_home(void) {
-    bp_player_info_t pi;
-    bp_player_get_info(&pi);
-    char buf[32];
-    bool has_track = pi.state != BP_PLAY_IDLE && pi.name[0];
-    set_text_if(s_home_card_title, has_track ? state_text(&pi, buf, sizeof(buf)) : "未在播放");
-    set_text_if(s_home_card_name, has_track ? pi.name :
-                bp_baidu_state() == BP_BD_READY ? "选一首网盘里的歌吧" : "先在设置里授权网盘");
-    lv_bar_set_value(s_home_card_bar, pi.total_ms ? (int32_t)((uint64_t)pi.pos_ms * 1000 / pi.total_ms) : 0,
-                     LV_ANIM_OFF);
-    set_text_if(s_home_card_icon, pi.state == BP_PLAY_PAUSED ? LV_SYMBOL_PAUSE : LV_SYMBOL_AUDIO);
-    for (int i = 0; i < HOME_ITEMS; i++)
-        pill_select(s_home_items[i], s_home_icons[i], s_home_texts[i], i == s_sel[BP_PAGE_HOME]);
 }
 
 static bool list_changed(const bp_list_t *a, const bp_list_t *b) {
@@ -572,8 +630,66 @@ static void refresh_brightness(void) {
 }
 
 static void refresh_settings(void) {
-    for (int i = 0; i < SETTINGS_ITEMS; i++)
-        pill_select(s_set_items[i], s_set_icons[i], s_set_texts[i], i == s_sel[BP_PAGE_SETTINGS]);
+    char bri[12], ssid[33] = "";
+    snprintf(bri, sizeof(bri), "%d / %d", g_bp.brightness, BP_BRIGHTNESS_LEVELS);
+    if (g_bp.wifi_up) bp_wifi_get_ssid(ssid, sizeof(ssid));
+    const char *vals[BP_MENU_COUNT] = {
+        "", "", g_bp.skin == BP_SKIN_REEL ? "磁带" : "经典", bri,
+        g_bp.wifi_up ? ssid : "未连接", bp_baidu_state() == BP_BD_READY ? "已绑定" : "未绑定", "",
+    };
+    int sel = s_sel[BP_PAGE_SETTINGS];
+    int first = sel - MENU_ROWS / 2;
+    if (first > BP_MENU_COUNT - MENU_ROWS) first = BP_MENU_COUNT - MENU_ROWS;
+    if (first < 0) first = 0;
+    for (int i = 0; i < MENU_ROWS; i++) {
+        int item = first + i;
+        bool on = item == sel;
+        set_text_if(s_set_icons[i], MENU_ICONS[item]);
+        set_text_if(s_set_texts[i], MENU_TEXTS[item]);
+        set_text_if(s_set_vals[i], vals[item]);
+        pill_select(s_set_items[i], s_set_icons[i], s_set_texts[i], on);
+        lv_obj_set_style_text_color(s_set_vals[i], lv_color_hex(on ? COL_ON_ACC : COL_MUTED), 0);
+    }
+    lv_obj_set_y(s_set_thumb, 222 * first / BP_MENU_COUNT);
+}
+
+static void refresh_skin(void) {
+    int sel = s_sel[BP_PAGE_SKIN];
+    for (int i = 0; i < 2; i++) {
+        lv_obj_set_style_border_width(s_skin_card[i], i == sel ? 3 : 1, 0);
+        lv_obj_set_style_border_color(s_skin_card[i], lv_color_hex(i == sel ? 0xFFFFFF : 0x2C3A55), 0);
+        set_text_if(s_skin_tag[i], (int)g_bp.skin == (i ? BP_SKIN_REEL : BP_SKIN_CLASSIC) ? "使用中" : "");
+    }
+}
+
+// 磁带界面自带状态栏;显示它时隐藏全局状态栏,避免重叠。
+static void apply_status_visibility(void) {
+    bool hide = s_page == BP_PAGE_PLAYER && g_bp.skin == BP_SKIN_REEL;
+    lv_obj_t *items[] = {s_st_wifi, s_st_play, s_st_batt};
+    for (size_t i = 0; i < 3; i++) {
+        if (hide) lv_obj_add_flag(items[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(items[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void refresh_player_page(void) {
+    bp_player_info_t pi;
+    bp_player_get_info(&pi);
+    if (g_bp.skin == BP_SKIN_REEL) bp_reel_refresh(&pi);
+    else refresh_player();
+}
+
+// 磁带界面动画:只在它显示时运行,实际间隔按时钟计算。
+static void anim_timer_cb(lv_timer_t *t) {
+    (void)t;
+    int64_t now = esp_timer_get_time() / 1000;
+    uint32_t dt = s_anim_last ? (uint32_t)(now - s_anim_last) : ANIM_MS;
+    s_anim_last = now;
+    if (s_page != BP_PAGE_PLAYER || g_bp.skin != BP_SKIN_REEL || g_bp.screen_off) return;
+    if (dt > 200) dt = 200;
+    bp_player_info_t pi;
+    bp_player_get_info(&pi);
+    bp_reel_tick(dt, &pi);
 }
 
 static void refresh_wifi(void) {
@@ -623,56 +739,70 @@ static void ui_timer_cb(lv_timer_t *t) {
         bp_ui_toast("配网完成，正在连接");
     }
     switch (s_page) {
-        case BP_PAGE_HOME: refresh_home(); break;
         case BP_PAGE_LIST: refresh_list(); break;
-        case BP_PAGE_PLAYER: refresh_player(); break;
+        case BP_PAGE_PLAYER: refresh_player_page(); break;
         case BP_PAGE_AUTH: refresh_auth(); break;
         case BP_PAGE_SETTINGS: refresh_settings(); break;
         case BP_PAGE_WIFI: refresh_wifi(); break;
         case BP_PAGE_ACCOUNT: refresh_account(); break;
         case BP_PAGE_WIFI_AP: refresh_wifi_ap(); break;
         case BP_PAGE_BRIGHTNESS: refresh_brightness(); break;
+        case BP_PAGE_SKIN: refresh_skin(); break;
         default: break;
     }
 }
 
 // ---- 公共接口 -------------------------------------------------------------------
+static void log_heap(const char *what) {
+    ESP_LOGI("bp_ui", "heap after %s: free=%u largest=%u", what, (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+}
+
 void bp_ui_init(void) {
+    log_heap("start");
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(COL_BG), 0);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-    build_home();
     build_list();
     build_player();
-    build_auth();
     build_settings();
-    build_info_pages();
     build_top_layer();
-    lv_obj_remove_flag(s_pages[BP_PAGE_HOME], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(s_pages[BP_PAGE_PLAYER], LV_OBJ_FLAG_HIDDEN);
+    bp_ui_apply_skin();
     ui_timer_cb(NULL);
     lv_timer_create(ui_timer_cb, 200, NULL);
+    lv_timer_create(anim_timer_cb, ANIM_MS, NULL);
+    log_heap("init");
 }
 
 void bp_ui_goto(bp_page_t page) {
     if (page >= BP_PAGE_COUNT) return;
     if (page != s_page) {
-        lv_obj_add_flag(s_pages[s_page], LV_OBJ_FLAG_HIDDEN);
+        if (!s_pages[page] && LAZY_BUILDERS[page]) LAZY_BUILDERS[page]();
+        if (!s_pages[page]) return;
         lv_obj_remove_flag(s_pages[page], LV_OBJ_FLAG_HIDDEN);
+        if (LAZY_BUILDERS[s_page]) {   // 不常用页面:离开即删除,释放内存
+            lv_obj_delete(s_pages[s_page]);
+            s_pages[s_page] = NULL;
+        } else {
+            lv_obj_add_flag(s_pages[s_page], LV_OBJ_FLAG_HIDDEN);
+        }
         s_page = page;
+        apply_status_visibility();
     }
     if (page == BP_PAGE_ACCOUNT) s_acct_armed = false;
     if (page == BP_PAGE_AUTH) s_auth_shown[0] = 0;
     if (page == BP_PAGE_WIFI_AP) s_ap_shown[0] = 0;
     switch (page) {   // 立即刷新,不等定时器
-        case BP_PAGE_HOME: refresh_home(); break;
         case BP_PAGE_LIST: refresh_list(); break;
-        case BP_PAGE_PLAYER: refresh_player(); break;
+        case BP_PAGE_PLAYER: refresh_player_page(); break;
         case BP_PAGE_AUTH: refresh_auth(); break;
         case BP_PAGE_SETTINGS: refresh_settings(); break;
         case BP_PAGE_WIFI: refresh_wifi(); break;
         case BP_PAGE_ACCOUNT: refresh_account(); break;
         case BP_PAGE_WIFI_AP: refresh_wifi_ap(); break;
         case BP_PAGE_BRIGHTNESS: refresh_brightness(); break;
+        case BP_PAGE_SKIN: refresh_skin(); break;
         default: break;
     }
 }
@@ -687,8 +817,8 @@ void bp_ui_toast(const char *text) {
 }
 
 void bp_ui_move(int delta) {
-    int count = s_page == BP_PAGE_HOME ? HOME_ITEMS :
-                s_page == BP_PAGE_SETTINGS ? SETTINGS_ITEMS :
+    int count = s_page == BP_PAGE_SETTINGS ? BP_MENU_COUNT :
+                s_page == BP_PAGE_SKIN ? 2 :
                 s_page == BP_PAGE_LIST ? s_list_rows : 0;
     if (count <= 0) return;
     int sel = s_sel[s_page] + delta;
@@ -702,6 +832,37 @@ void bp_ui_move(int delta) {
 
 int bp_ui_selected(void) { return s_sel[s_page]; }
 
+void bp_ui_set_selected(bp_page_t page, int sel) {
+    if (page < BP_PAGE_COUNT) s_sel[page] = sel;
+}
+
+void bp_ui_apply_skin(void) {
+    bool reel = g_bp.skin == BP_SKIN_REEL;
+    if (s_built_skin != (int)g_bp.skin) {   // 只保留当前皮肤的对象
+        lv_obj_clean(s_pl_reel);
+        lv_obj_clean(s_pl_classic);
+        if (reel) bp_reel_build(s_pl_reel);
+        else build_classic(s_pl_classic);
+        s_built_skin = g_bp.skin;
+    }
+    if (reel) {
+        lv_obj_remove_flag(s_pl_reel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_pl_classic, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_remove_flag(s_pl_classic, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_pl_reel, LV_OBJ_FLAG_HIDDEN);
+    }
+    apply_status_visibility();
+    if (s_page == BP_PAGE_PLAYER) refresh_player_page();
+}
+
+void bp_ui_reel_kick(int dir) { bp_reel_kick(dir); }
+
+void bp_ui_volume_feedback(void) {
+    if (g_bp.skin == BP_SKIN_REEL) bp_reel_volume();
+    if (s_page == BP_PAGE_PLAYER) refresh_player_page();
+}
+
 bp_row_kind_t bp_ui_list_row(int *file_index) {
     if (s_list.status != 2 && s_list.status != 1) return BP_ROW_RETRY;
     if (s_list.status == 1) return BP_ROW_NONE;
@@ -712,8 +873,9 @@ bp_row_kind_t bp_ui_list_row(int *file_index) {
 void bp_ui_list_reset_sel(void) { s_sel[BP_PAGE_LIST] = 0; }
 
 void bp_ui_set_onboarding(bool on) {
-    set_text_if(s_ap_title, on ? "第1步 连接网络" : "网页配网");
-    set_text_if(s_auth_title, on ? "第2步 绑定网盘" : "连接百度网盘");
+    s_onboarding = on;
+    if (s_pages[BP_PAGE_WIFI_AP]) set_text_if(s_ap_title, on ? "第1步 连接网络" : "网页配网");
+    if (s_pages[BP_PAGE_AUTH]) set_text_if(s_auth_title, on ? "第2步 绑定网盘" : "连接百度网盘");
 }
 
 void bp_ui_account_arm(bool armed) {
