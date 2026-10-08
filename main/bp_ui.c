@@ -67,6 +67,8 @@ extern const lv_image_dsc_t bp_disc_bluey_thumb, bp_disc_bingo_thumb, bp_disc_pe
 static lv_obj_t *s_pl_classic, *s_pl_reel;
 static int64_t s_anim_last;
 static int s_built_skin = -1;
+static bool s_hint_on;                       // 开机续播提示
+static char s_hint_line[48], s_hint_folder[BP_FOLDER_MAX];
 static bool s_onboarding;
 static lv_obj_t *s_arc, *s_pl_time, *s_pl_total, *s_pl_state, *s_pl_name, *s_pl_meta;
 static lv_obj_t *s_pl_vol_bar, *s_pl_icon;
@@ -588,9 +590,8 @@ static void refresh_list(void) {
     }
 }
 
-static void refresh_player(void) {
-    bp_player_info_t pi;
-    bp_player_get_info(&pi);
+static void refresh_player(const bp_player_info_t *ppi) {
+    bp_player_info_t pi = *ppi;
     char buf[48], t[16];
     bp_format_time(pi.pos_ms, t, sizeof(t));
     set_text_if(s_pl_time, t);
@@ -608,6 +609,7 @@ static void refresh_player(void) {
     set_text_if(s_pl_icon, pi.state == BP_PLAY_PAUSED ? LV_SYMBOL_PAUSE :
                            pi.state == BP_PLAY_ERROR ? LV_SYMBOL_WARNING : LV_SYMBOL_PLAY);
     set_text_if(s_pl_name, pi.name[0] ? pi.name : "未在播放");
+    if (s_hint_on) set_text_if(s_pl_state, pi.folder);   // 续播提示:状态行显示目录
     if (pi.count && pi.kbps) snprintf(buf, sizeof(buf), "%d / %d · %lu kbps", pi.index + 1, pi.count,
                                       (unsigned long)pi.kbps);
     else if (pi.count) snprintf(buf, sizeof(buf), "%d / %d", pi.index + 1, pi.count);
@@ -695,8 +697,25 @@ static void apply_status_visibility(void) {
 static void refresh_player_page(void) {
     bp_player_info_t pi;
     bp_player_get_info(&pi);
+    // 开机续播提示:曲目开始(或续播失败)前,用曲名/目录两行告诉用户正在做什么。
+    if (s_hint_on && (pi.name[0] || pi.state == BP_PLAY_ERROR)) {
+        s_hint_on = false;
+        ESP_LOGI("bp_ui", "resume hint: done (%s)", pi.name[0] ? "playing" : "error");
+    }
+    if (s_hint_on) {
+        strlcpy(pi.name, s_hint_line, sizeof(pi.name));
+        strlcpy(pi.folder, s_hint_folder, sizeof(pi.folder));
+    }
     if (bp_skin_is_tape(g_bp.skin)) bp_reel_refresh(&pi);
-    else refresh_player();
+    else refresh_player(&pi);
+}
+
+void bp_ui_set_resume_hint(const char *line, const char *folder) {
+    ESP_LOGI("bp_ui", "resume hint: %s %s", line ? line : "(cleared)", folder ? folder : "");
+    s_hint_on = line != NULL;
+    strlcpy(s_hint_line, line ? line : "", sizeof(s_hint_line));
+    strlcpy(s_hint_folder, folder ? folder : "", sizeof(s_hint_folder));
+    if (s_page == BP_PAGE_PLAYER) refresh_player_page();
 }
 
 // 磁带界面动画:只在它显示时运行,实际间隔按时钟计算。

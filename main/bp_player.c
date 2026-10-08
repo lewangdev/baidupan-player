@@ -45,6 +45,7 @@
 
 typedef enum {
     CMD_PLAY,
+    CMD_PLAY_LAST,
     CMD_NEXT,
     CMD_PREV,
     CMD_STOP,
@@ -843,6 +844,45 @@ static void stop_pipeline(void) {
     while (s_pipeline_running) vTaskDelay(pdMS_TO_TICKS(20));
 }
 
+// ---- 记住上次播放的位置(目录/全部音频的那一页 + 曲目),开机后从这里接着播 ----------
+#define LAST_NS "bp_last"
+
+typedef struct {
+    uint8_t source;        // bp_source_t
+    int32_t page;
+    uint32_t start;        // 该页在网盘接口里的起始偏移
+    uint64_t fs_id;        // 当前曲目
+    char dir[BP_PATH_MAX];
+} last_play_t;
+
+static last_play_t s_last_saved;
+
+static void remember_last(const bp_file_t *f) {
+    last_play_t lp;
+    memset(&lp, 0, sizeof(lp));   // 含填充字节,便于 memcmp
+    lp.source = (uint8_t)s_pl_req.source;
+    lp.page = s_pl_req.page;
+    lp.start = s_pl_req.start;
+    lp.fs_id = f->fs_id;
+    strlcpy(lp.dir, s_pl_req.dir, sizeof(lp.dir));
+    if (memcmp(&lp, &s_last_saved, sizeof(lp)) == 0) return;   // 未变化不重复写 flash
+    nvs_handle_t h;
+    if (nvs_open(LAST_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_blob(h, "pos", &lp, sizeof(lp)) == ESP_OK && nvs_commit(h) == ESP_OK) s_last_saved = lp;
+    nvs_close(h);
+}
+
+static bool load_last(last_play_t *lp) {
+    nvs_handle_t h;
+    if (nvs_open(LAST_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t len = sizeof(*lp);
+    memset(lp, 0, sizeof(*lp));
+    bool ok = nvs_get_blob(h, "pos", lp, &len) == ESP_OK && len == sizeof(*lp);
+    nvs_close(h);
+    lp->dir[sizeof(lp->dir) - 1] = '\0';
+    return ok && lp->source <= BP_SRC_ALL_AUDIO;
+}
+
 static void start_track_at(int index, bool resume) {
     stop_pipeline();
     s_suspended = false;
@@ -862,6 +902,7 @@ static void start_track_at(int index, bool resume) {
         }
     }
     const bp_file_t *f = &s_playlist[index];
+    if (!resume) remember_last(f);
     uint32_t gen;
     portENTER_CRITICAL(&s_mux);
     gen = ++s_gen;
@@ -949,6 +990,50 @@ static bool continue_next_page(void) {
     return started;
 }
 
+bool bp_player_last_label(char *out, size_t cap) {
+    last_play_t lp;
+    if (!load_last(&lp)) return false;
+    if (!out || !cap) return true;
+    const char *slash = strrchr(lp.dir, '/');
+    const char *name = lp.source == BP_SRC_ALL_AUDIO ? "全部音频" :
+                       slash && slash[1] ? slash + 1 : "我的网盘";
+    bp_name_shorten(name, out, cap);   // 按 UTF-8 字符缩短
+    return true;
+}
+
+// 开机续播:取回记住的那一页,从记住的曲目开始(找不到就从该页第一首开始)。
+// 返回 1 已开始,0 没有记录,-1 有记录但载入失败。
+static int play_last(void) {
+    last_play_t lp;
+    if (!load_last(&lp)) return 0;
+    s_last_saved = lp;
+    bp_list_t *page = malloc(sizeof(bp_list_t));
+    if (!page) return -1;
+    bp_list_req_t req = {.source = (bp_source_t)lp.source, .page = lp.page, .start = lp.start};
+    strlcpy(req.dir, lp.dir, sizeof(req.dir));
+    bool started = false;
+    if (bp_baidu_list_fetch(&req, page) == 0) {
+        int n = 0, index = 0;
+        for (int i = 0; i < page->count; i++) {
+            const bp_file_t *f = &page->files[i];
+            if (f->is_dir || f->format == BP_FMT_UNKNOWN) continue;
+            if (f->fs_id == lp.fs_id) index = n;
+            s_playlist[n++] = *f;
+        }
+        if (n) {
+            s_pl_count = n;
+            s_pl_req = req;
+            s_pl_has_more = page->has_more;
+            s_pl_next_start = page->next_start;
+            start_track(index);
+            started = true;
+        }
+    }
+    free(page);
+    ESP_LOGI(TAG, "resume last folder %s: %s", lp.dir, started ? "playing" : "unavailable");
+    return started ? 1 : -1;
+}
+
 static void finish_idle(void) {
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     portENTER_CRITICAL(&s_mux);
@@ -997,6 +1082,14 @@ static void ctrl_task(void *arg) {
                 else start_track(bp_playlist_move(s_pl_index, s_pl_count, -1, true));
                 break;
             }
+            case CMD_PLAY_LAST:
+                consecutive_failures = 0;
+                if (!s_pipeline_running) {
+                    int r = play_last();
+                    if (r < 0) set_state(BP_PLAY_ERROR, "上次的目录暂时无法载入");
+                    else if (r == 0) finish_idle();
+                }
+                break;
             case CMD_STOP:
                 stop_pipeline();
                 s_suspended = false;
@@ -1097,6 +1190,7 @@ void bp_player_wait_released(int timeout_ms) {
 void bp_player_next(void) { post(CMD_NEXT, 0, NULL); }
 void bp_player_prev(void) { post(CMD_PREV, 0, NULL); }
 void bp_player_stop(void) { post(CMD_STOP, 0, NULL); }
+void bp_player_play_last(void) { post(CMD_PLAY_LAST, 0, NULL); }
 
 void bp_player_set_volume(uint8_t volume) {
     g_bp.volume = volume > 100 ? 100 : volume;

@@ -256,7 +256,32 @@ static void set_onboarding(bool on) {
     }
 }
 
-// 联网:未绑定网盘就进入第 2 步扫码绑定;已绑定则从配网相关页面回到播放界面。
+// 开机后第一次联网:在播放页且还没播过任何曲目时,从上次播放的目录接着播(每次开机只做一次)。
+static bool s_autoplay_tried;
+
+static void resume_hint(const char *line) {
+    char folder[BP_FOLDER_MAX];
+    if (bsp_lvgl_lock(500)) {
+        if (line && bp_player_last_label(folder, sizeof(folder))) bp_ui_set_resume_hint(line, folder);
+        else bp_ui_set_resume_hint(NULL, NULL);
+        bsp_lvgl_unlock();
+    }
+}
+
+static void autoplay_last(void) {
+    if (s_autoplay_tried) return;
+    s_autoplay_tried = true;
+    bp_player_info_t pi;
+    bp_player_get_info(&pi);
+    if (bp_ui_page() == BP_PAGE_PLAYER && !pi.name[0] && bp_player_last_label(NULL, 0)) {
+        resume_hint("正在载入上次播放…");
+        bp_player_play_last();
+    } else {
+        resume_hint(NULL);
+    }
+}
+
+// 联网:未绑定网盘就进入第 2 步扫码绑定;已绑定则从配网相关页面回到播放界面,并续播上次的目录。
 static void on_wifi_up(void) {
     bp_page_t page = bp_ui_page();
     bool setup_page = page == BP_PAGE_PLAYER || page == BP_PAGE_WIFI ||
@@ -267,8 +292,10 @@ static void on_wifi_up(void) {
             bp_ui_toast("网络已连接");
             go(BP_PAGE_PLAYER);
         }
+        autoplay_last();
         return;
     }
+    resume_hint(NULL);   // 网盘未绑定:不会续播
     if (!setup_page || s_auth_declined) return;
     screen_off(false);
     s_last_activity_ms = now_ms();
@@ -550,6 +577,8 @@ void app_main(void) {
         set_onboarding(true);
         go(BP_PAGE_WIFI_AP);
     } else {
+        // 已绑定网盘且有上次播放记录:联网前先在播放页提示即将续播,免得以为没反应。
+        if (bp_baidu_state() == BP_BD_READY) resume_hint("正在连接网络…");
         bp_wifi_start_station();
     }
     bp_console_start();

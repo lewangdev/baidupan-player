@@ -160,6 +160,7 @@ void bp_ui_move(int delta);                     // 当前页选中项移动
 int  bp_ui_selected(void);                      // 设置菜单 / 皮肤选择页的选中项
 void bp_ui_set_selected(bp_page_t page, int sel);
 void bp_ui_apply_skin(void);                    // g_bp.skin 变化后切换播放界面
+void bp_ui_set_resume_hint(const char *line, const char *folder);  // 开机续播提示;NULL 清除
 void bp_ui_reel_kick(int dir);                  // 磁带界面:长按切歌时转轮快进(+1)/倒带(-1)
 void bp_ui_volume_feedback(void);               // 音量变化的界面反馈
 bp_row_kind_t bp_ui_list_row(int *file_index);  // 列表页选中行
@@ -196,6 +197,8 @@ void bp_player_wait_released(int timeout_ms);
 void bp_player_next(void);
 void bp_player_prev(void);
 void bp_player_stop(void);
+void bp_player_play_last(void);
+bool bp_player_last_label(char *out, size_t cap);  // 上次播放的目录名(全部音频时为“全部音频”);无记录返回 false     // 开机续播:从上次播放的目录(和曲目)开始;没有记录时不动作
 void bp_player_set_volume(uint8_t volume);
 void bp_player_get_info(bp_player_info_t *out);
 bool bp_player_active(void);        // 有曲目在缓冲/播放/暂停

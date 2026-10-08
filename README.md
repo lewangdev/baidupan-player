@@ -65,6 +65,10 @@ waveforms on the tape, and a fish cut in two whose swaying head and tail are joi
 sound-wave bars; the **Classic** skin is the progress ring. The **Bluey** and **Peppa** skins are tape
 variants whose reels are spinning fan-drawn character faces (a blue and an orange pup; a pink pig).
 
+**Resume on boot.** The player remembers the folder (or *All audio*) and the track you last played. At the
+next power-on it shows “正在连接网络…” and then “正在载入上次播放…” with the folder name on the player page, and
+starts that track again once Wi-Fi is up. If the folder is gone, it says so and stays on the player.
+
 ## Supported audio
 
 | Format | Details |
