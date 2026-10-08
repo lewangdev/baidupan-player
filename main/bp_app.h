@@ -16,7 +16,7 @@
 
 #include "bp_media.h"
 
-#define BP_APP_VERSION "0.5.0"
+#define BP_APP_VERSION "0.6.0"
 #define BP_NAME_MAX 96
 #define BP_PAGE_SIZE 12       // 每次向网盘请求的条目数(受 JSON 内存预算约束)
 #define BP_PLAYLIST_MAX BP_PAGE_SIZE
